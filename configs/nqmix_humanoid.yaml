@@ -1,0 +1,35 @@
+# NQMIX on MaMuJoCo Humanoid "9|8"
+
+algorithm: nqmix
+env_name: Humanoid
+partitioning: "9|8"
+
+# Training
+n_episodes: 3000
+max_steps: 1000
+batch_size: 16
+seed: 42
+
+# Evaluation
+eval_freq: 100
+n_eval_episodes: 10
+
+# Logging
+log_freq: 10
+
+# Exploration
+noise_scale_start: 0.12
+noise_scale_end: 0.02
+noise_decay_episodes: 1500
+
+# Agent parameters
+agent_params:
+  hidden_dim: 128
+  lr_actor: 0.0003
+  lr_critic: 0.0003
+  gamma: 0.99
+  tau: 0.005
+  buffer_capacity: 5000
+
+# Paths
+save_dir: ./results/nqmix_humanoid
