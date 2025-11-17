@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 import numpy as np
 from typing import List, Tuple, Dict
-from networks import AgentNetwork, MixingNetwork
-from src.memory.replay_buffer import ReplayBuffer
+
+from src.networks import AgentNetwork, MixingNetwork
+from src.memory import ReplayBuffer
 
 class NQMIX:
     """
