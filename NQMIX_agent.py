@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 from typing import List, Tuple, Dict
 from neural_networks import AgentNetwork, MixingNetwork
-from replay_buffer import ReplayBuffer
+from src.memory.replay_buffer import ReplayBuffer
 
 class NQMIX:
     """
