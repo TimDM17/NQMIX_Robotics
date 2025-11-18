@@ -97,5 +97,5 @@ class ReplayBuffer:
         """
         return len(self.buffer)
     
-print("✓ ReplayBuffer defined (episode-based storage)")
+print("[OK] ReplayBuffer defined (episode-based storage)")
 

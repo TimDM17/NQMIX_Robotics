@@ -98,4 +98,4 @@ class Logger:
         self.info(f"{'='*70}\n")
 
 
-print("✓ Logger defined")
+print("[OK] Logger defined")

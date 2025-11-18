@@ -50,7 +50,7 @@ class MaMuJoCoWrapper:
         ]
         self.state_dim = sum(self.obs_dims)
 
-        print(f"✓ MaMuJoCo {env_name} ({partitioning}) initialized")
+        print(f"[OK] MaMuJoCo {env_name} ({partitioning}) initialized")
         print(f"  Agents: {self.n_agents}")
         print(f"  Obs dims: {self.obs_dims}")
         print(f"  Action dims: {self.action_dims}")
@@ -98,4 +98,4 @@ class MaMuJoCoWrapper:
         self.env.close()
 
 
-print("✓ MaMuJoCoWrapper defined")
+print("[OK] MaMuJoCoWrapper defined")

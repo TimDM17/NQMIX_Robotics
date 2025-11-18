@@ -111,4 +111,4 @@ class MixingNetwork(nn.Module):
 
         return q_tot
     
-print("✓ MixingNetwork defined (NQMIX paper architecture)")
+print("[OK] MixingNetwork defined (NQMIX paper architecture)")

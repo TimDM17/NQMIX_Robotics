@@ -102,4 +102,4 @@ class BaseAgent(ABC):
         pass
 
 
-print("✓ BaseAgent abstract class defined")
+print("[OK] BaseAgent abstract class defined")

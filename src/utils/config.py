@@ -43,4 +43,4 @@ def save_config(config: Dict, save_path: str):
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
-print("✓ Config utilities defined")
+print("[OK] Config utilities defined")

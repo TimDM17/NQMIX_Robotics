@@ -158,4 +158,4 @@ class AgentNetwork(nn.Module):
         """
         return torch.zeros(batch_size, self.hidden_dim)
     
-print("✓ AgentNetwork defined (NQMIX paper architecture)")
+print("[OK] AgentNetwork defined (NQMIX paper architecture)")
