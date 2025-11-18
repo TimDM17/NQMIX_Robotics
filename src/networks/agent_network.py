@@ -14,18 +14,23 @@ class AgentNetwork(nn.Module):
     3. Critic head: |U|-dim FC layer (outputs Q-value for each action dimension)
     4. Actor head: 64-dim FC layer with ReLU -> action-dim FC layer
     """
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 64,
-                 action_low: float = -0.4, action_high: float = 0.4):
+    def __init__(
+            self,
+            obs_dim: int,
+            action_dim: int,
+            hidden_dim: int = 64,
+            action_low: float = -0.4,
+            action_high: float = 0.4
+        ):
         """
-        Initialize agent network following NQMIX paper specification
+        Initialize agent network
 
         Args:
             obs_dim: Dimension of agent's observation space
             action_dim: Dimension of agent's action space
-                        (Agent 0: 9 actions, Agent 1: 8 actions)
             hidden_dim = GRU hidden state dimension (paper uses 64)
-            action_low = Lower bound of action space (Humanoid: -0.4)
-            action_high = Upper bound of action space (Humanoid: 0.4)
+            action_low = Lower bound of action space 
+            action_high = Upper bound of action space 
         """
         super(AgentNetwork, self).__init__()
 
@@ -80,8 +85,13 @@ class AgentNetwork(nn.Module):
         self.actor_out = nn.Linear(64, action_dim)
 
 
-    def forward(self, obs: torch.Tensor, last_action: torch.Tensor,
-                hidden: torch.Tensor, current_action: torch.Tensor= None):
+    def forward(
+            self,
+            obs: torch.Tensor,
+            last_action: torch.Tensor,
+            hidden: torch.Tensor,
+            current_action: torch.Tensor= None
+        ):
         """
         Forward pass through the agent network.
 
