@@ -13,7 +13,6 @@ __all__ = [
     # Agents
     'BaseAgent',
     'NQMIX',
-    'FACMAC',
     # Environments
     'MaMuJoCoWrapper',
     # Training
