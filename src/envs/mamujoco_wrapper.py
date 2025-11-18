@@ -6,7 +6,6 @@ Provides consistent API for different MaMuJoCo environments
 
 import numpy as np
 from typing import Tuple, List, Dict
-from gymnasium_robotics import mamujoco_v1
 
 
 class MaMuJoCoWrapper:
@@ -28,6 +27,9 @@ class MaMuJoCoWrapper:
             env_name: Environment name (e.g., "Humanoid", "Ant")
             partitioning: Action partitioning (e.g., "9|8" for Humanoid)
         """
+        # Import here to allow framework to work even without gymnasium_robotics
+        from gymnasium_robotics import mamujoco_v1
+
         self.env = mamujoco_v1.parallel_env(env_name, partitioning)
         self.env_name = env_name
         self.partitioning = partitioning
@@ -96,6 +98,10 @@ class MaMuJoCoWrapper:
     def close(self):
         """Close environment"""
         self.env.close()
+
+    def render(self):
+        """Render environment (returns frame if render_mode='rgb_array')."""
+        return self.env.render()
 
 
 print("[OK] MaMuJoCoWrapper defined")

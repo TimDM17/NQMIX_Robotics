@@ -1,4 +1,6 @@
-"""Environment wrappers"""
+"""
+Environment wrappers for MARL training
+"""
 
 from src.envs.mamujoco_wrapper import MaMuJoCoWrapper
 
