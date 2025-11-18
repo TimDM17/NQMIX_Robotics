@@ -12,10 +12,10 @@ import numpy as np
 import random
 from pathlib import Path
 
-from src.envs.mamujoco_wrapper import MaMuJoCoWrapper
-from src.agents.nqmix import NQMIX
-from src.training.trainer import Trainer
-from src.utils.logger import Logger
+from src import MaMuJoCoWrapper
+from src import NQMIX, FACMAC
+from src import Trainer
+from src import Logger
 
 
 def main():
@@ -62,7 +62,6 @@ def main():
 def create_agent(config, env):
     """Factory function to create agent based on config"""
     if config['algorithm'] == 'nqmix':
-        from src.agents.nqmix import NQMIX
         return NQMIX(
             n_agents=env.n_agents,
             obs_dims=env.obs_dims,
@@ -70,12 +69,14 @@ def create_agent(config, env):
             state_dim=env.state_dim,
             **config['agent_params']
         )
-    elif config['algorithm'] == 'qmix':
-        # Future: QMIX implementation
-        raise NotImplementedError("QMIX not yet implemented")
     elif config['algorithm'] == 'facmac':
-        # Future: FACMAC implementation
-        raise NotImplementedError("FACMAC not yet implemented")
+        return FACMAC(
+            n_agents=env.n_agents,
+            obs_dims=env.obs_dims,
+            action_dims=env.action_dims,
+            state_dim=env.state_dim,
+            **config['agent_params']
+        )
     else:
         raise ValueError(f"Unknown algorithm: {config['algorithm']}")
 
