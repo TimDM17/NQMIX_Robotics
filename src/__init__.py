@@ -4,7 +4,7 @@ MARL Comparison Framework
 Main package exports for easy access to core components.
 """
 
-from src.agents import BaseAgent, NQMIX, FACMAC
+from src.agents import BaseAgent, NQMIX
 from src.envs import MaMuJoCoWrapper
 from src.training import Trainer, Evaluator
 from src.utils import Logger, load_config, save_config
