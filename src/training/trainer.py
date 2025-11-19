@@ -1,5 +1,20 @@
 """
-Trainer for orchestrating the MARL training loop.
+Training loop orchestratot for MARL algorithms.
+
+Purpose:
+    Manages the complete training process: collecting episodes, calling agent
+    training updates, decaying exploration noise, logging metrics and triggering
+    periodic evaluations
+
+Key Concepts:
+    - Episode Collection: Run policy in environment, store experience
+    - Off-Policy Training: Learn from past episodes stored in replay buffer
+    - Exploration Decay: Start with high noise, gradually reduce for exploitation
+
+Connections:
+    - Uses: BaseAgent (for training), MaMuJoCo (environment),
+            Logger (metrics), Evaluator (periodic testing)
+    - Called by: scripts/train.py
 """
 
 import time

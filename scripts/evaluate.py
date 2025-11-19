@@ -1,9 +1,19 @@
 """
 Evaluation script for trained MARL models.
 
+Purpose:
+    Standalone script for evaluating trained model checkpoints without training.
+    Runs deterministic episodes and reports performance statistics.
+
 Usage:
     python scripts/evaluate.py --checkpoint results/nqmix_humanoid/best_model --config configs/nqmix_humanoid.yaml
     python scripts/evaluate.py --checkpoint results/nqmix_humanoid/best_model --config configs/nqmix_humanoid.yaml --episodes 50
+
+Flow:
+    1. Load config and create environment
+    2. Create agent and load checkpoint
+    3. Run evaluation episodes (no exploration noise)
+    4. Compute and display statistics
 """
 
 import argparse
@@ -11,7 +21,7 @@ import sys
 import numpy as np
 from pathlib import Path
 
-# Add project root to path
+# Add project root to path for imports
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -22,7 +32,19 @@ from src.utils import load_config, Logger
 
 
 def create_agent(config: dict, env: MaMuJoCoWrapper):
-    """Create agent based on config."""
+    """
+    Factory function to create agent based on config.
+
+    Note: This is duplicated from train.py. Consider refactoring
+    to a shared utility function in the future.
+
+    Args:
+        config: Configuration dictionary
+        env: Environment wrapper (provides dimensions)
+
+    Returns:
+        Initialized agent (weights not loaded yet)
+    """
     algorithm = config.get('algorithm', 'nqmix').lower()
     agent_params = config.get('agent_params', {})
 
@@ -48,6 +70,9 @@ def create_agent(config: dict, env: MaMuJoCoWrapper):
 
 
 def main():
+    # ================================================================
+    # ARGUMENT PARSING
+    # ================================================================
     parser = argparse.ArgumentParser(description='Evaluate trained MARL models')
     parser.add_argument('--checkpoint', type=str, required=True,
                         help='Path to model checkpoint')
@@ -59,28 +84,34 @@ def main():
                         help='Render environment (if supported)')
     args = parser.parse_args()
 
-    # Load config
+    # ================================================================
+    # SETUP
+    # ================================================================
     config = load_config(args.config)
 
-    # Initialize logger
+    # Console-only logger (no file output for evaluation)
     logger = Logger(verbose=True)
 
     logger.info(f"Evaluating checkpoint: {args.checkpoint}")
     logger.info(f"Config: {args.config}")
 
-    # Create environment
+    # ================================================================
+    # CREATE ENVIRONMENT
+    # ================================================================
     env_name = config.get('env_name', 'Humanoid')
     partitioning = config.get('partitioning', '9|8')
     env = MaMuJoCoWrapper(env_name=env_name, partitioning=partitioning)
 
     logger.info(f"Environment: {env_name} ({partitioning})")
 
-    # Create and load agent
+    # ================================================================
+    # CREATE AND LOAD AGENT
+    # ================================================================
     agent = create_agent(config, env)
-    agent.load(args.checkpoint)
+    agent.load(args.checkpoint)  # Load trained weights
     logger.info(f"Model loaded from {args.checkpoint}")
 
-    # Create evaluator
+    # Create evaluator (save_best=False since we're just evaluating)
     evaluator = Evaluator(
         agent=agent,
         env=env,
@@ -89,28 +120,34 @@ def main():
         save_best=False
     )
 
-    # Run evaluation
+    # ================================================================
+    # RUN EVALUATION
+    # ================================================================
     logger.info(f"\nRunning {args.episodes} evaluation episodes...\n")
 
     episode_rewards = []
     episode_lengths = []
 
+    # Run episodes and collect statistics
+    # We use _run_episode directly for more control over progress reporting
     for i in range(args.episodes):
         reward, length = evaluator._run_episode()
         episode_rewards.append(reward)
         episode_lengths.append(length)
 
+        # Progress update every 10 episodes
         if (i + 1) % 10 == 0:
             logger.info(f"Completed {i + 1}/{args.episodes} episodes")
 
-    # Compute statistics
+    # ================================================================
+    # COMPUTE AND DISPLAY STATISTICS
+    # ================================================================
     mean_reward = np.mean(episode_rewards)
-    std_reward = np.std(episode_rewards)
-    min_reward = np.min(episode_rewards)
-    max_reward = np.max(episode_rewards)
-    mean_length = np.mean(episode_lengths)
+    std_reward = np.std(episode_rewards)    # Standard deviation shows consistency
+    min_reward = np.min(episode_rewards)    # Worst case performance
+    max_reward = np.max(episode_rewards)    # Best case performance
+    mean_length = np.mean(episode_lengths)  # Average episode duration
 
-    # Print results
     logger.info(f"\n{'='*50}")
     logger.info("EVALUATION RESULTS")
     logger.info(f"{'='*50}")
@@ -121,6 +158,7 @@ def main():
     logger.info(f"Mean Length:  {mean_length:.1f}")
     logger.info(f"{'='*50}\n")
 
+    # Cleanup
     env.close()
 
     return {
