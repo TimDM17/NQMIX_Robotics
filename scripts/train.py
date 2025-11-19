@@ -52,7 +52,9 @@ def create_agent(config: dict, env: MaMuJoCoWrapper):
             lr_critic=agent_params.get('lr_critic', 5e-4),
             gamma=agent_params.get('gamma', 0.99),
             tau=agent_params.get('tau', 0.001),
-            buffer_capacity=agent_params.get('buffer_capacity', 5000)
+            buffer_capacity=agent_params.get('buffer_capacity', 5000),
+            action_low=agent_params.get('action_low', -0.4),
+            action_high=agent_params.get('action_high', 0.4)
         )
     elif algorithm == 'facmac':
         raise NotImplementedError("FACMAC not yet implemented")

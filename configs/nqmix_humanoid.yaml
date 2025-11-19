@@ -30,6 +30,8 @@ agent_params:
   gamma: 0.99
   tau: 0.005
   buffer_capacity: 5000
+  action_low: -0.4
+  action_high: 0.4
 
 # Paths
 save_dir: ./results/nqmix_humanoid

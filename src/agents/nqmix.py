@@ -46,7 +46,9 @@ class NQMIX(BaseAgent):
             lr_critic: float = 5e-4,
             gamma: float = 0.99,
             tau: float = 0.001,
-            buffer_capacity: int = 2000
+            buffer_capacity: int = 2000,
+            action_low: float = -0.4,
+            action_high: float = 0.4
     ):
         """
         Initialize NQMIX agent following paper specifications
@@ -72,6 +74,8 @@ class NQMIX(BaseAgent):
         self.state_dim = state_dim
         self.gamma = gamma # For TD target: R + γ*Q'
         self.tau = tau # For soft update: θ' ← τ*θ + (1-τ)*θ'
+        self.action_low = action_low
+        self.action_high = action_high
 
         # ======================================================================
         # Device setup (GPU if available, else CPU)
@@ -89,7 +93,9 @@ class NQMIX(BaseAgent):
             AgentNetwork(
                 obs_dim=obs_dims[i],       # Agent-specific observation size
                 action_dim=action_dims[i], # Agent-specific action size
-                hidden_dim=hidden_dim      # Shared hidden size(64)
+                hidden_dim=hidden_dim,      # Shared hidden size(64)
+                action_low=action_low,
+                action_high=action_high
             ).to(self.device)
             for i in range(n_agents)
         ])
@@ -108,7 +114,9 @@ class NQMIX(BaseAgent):
             AgentNetwork(
                 obs_dim=obs_dims[i],
                 action_dim=action_dims[i],
-                hidden_dim=hidden_dim
+                hidden_dim=hidden_dim,
+                action_low=action_low,
+                action_high=action_high
             ).to(self.device)
             for i in range(n_agents)
         ])
@@ -329,11 +337,10 @@ class NQMIX(BaseAgent):
                     action = action + noise
 
                     # Clamp to correct action space bounds!
-                    # Humanoid expects [-0.4, 0.4], NOT [-1.0, 1.0]
                     action = torch.clamp(
                         action,
-                        self.agent_eval[i].action_low,  # -0.4 for Humanoid
-                        self.agent_eval[i].action_high  # +0.4 for Humanoid
+                        self.agent_eval[i].action_low,  
+                        self.agent_eval[i].action_high  
                     )
                 
                 # Convert back to numpy and remove batch dimension
