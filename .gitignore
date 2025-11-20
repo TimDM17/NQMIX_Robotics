@@ -95,3 +95,7 @@ datasets/
 # Temporary files
 *.tmp
 *.bak
+
+# Papers
+FACMAC.pdf
+NQMIX.pdf
