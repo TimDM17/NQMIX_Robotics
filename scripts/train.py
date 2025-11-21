@@ -130,7 +130,12 @@ def main():
     # ================================================================
     # SETUP DIRECTORIES AND LOGGING
     # ================================================================
-    save_dir = Path(config.get('save_dir', './results/default'))
+    from datetime import datetime
+    
+    # Create timestamped run directory
+    base_save_dir = Path(config.get('save_dir', './results/default'))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_dir = base_save_dir / f"run_{timestamp}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     log_file = save_dir / 'training.log'
