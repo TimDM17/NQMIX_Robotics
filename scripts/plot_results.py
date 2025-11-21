@@ -70,7 +70,7 @@ def parse_log_file(log_path: str) -> dict:
     train_pattern = re.compile(
         r'Ep\s+(\d+)\s+\|\s+'           # Episode number
         r'R:\s+([-\d.]+)\s+\|\s+'        # Reward (can be negative)
-        r'R10:\s+([-\d.]+)\s+\|\s+'      # Average reward (R̄10 or R10)
+        r'R̄10:\s+([-\d.]+)\s+\|\s+'      # Average reward 
         r'Len:\s+(\d+)\s+\|\s+'          # Episode length
         r'Loss:\s+([-\d.]+)\s+\|\s+'     # Loss value
         r'Buf:\s+(\d+)\s+\|\s+'          # Buffer size
