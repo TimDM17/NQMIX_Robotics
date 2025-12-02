@@ -11,8 +11,8 @@ algorithm: facmac
 # ================================================================
 # ENVIRONMENT SETTINGS
 # ================================================================
-env_name: Humanoid      # MuJoCo environment
-partitioning: "9|8"     # Action split: agent_0 gets 9 dims, agent_1 gets 8 dims
+env_name: Humanoid      
+partitioning: "9|8"     
 
 # ================================================================
 # TRAINING SETTINGS
@@ -34,8 +34,6 @@ log_freq: 10            # Log training metrics every N episodes
 # ================================================================
 # EXPLORATION NOISE SETTINGS
 # ================================================================
-# Gaussian noise added to actions for exploration
-# Decays exponentially from start to end over decay_episodes
 noise_scale_start: 0.12   # Initial noise std (high exploration)
 noise_scale_end: 0.02     # Final noise std (low exploration)
 noise_decay_episodes: 3000 # Extended decay for 100K episodes
@@ -44,7 +42,7 @@ noise_decay_episodes: 3000 # Extended decay for 100K episodes
 # AGENT HYPERPARAMETERS
 # ================================================================
 agent_params:
-  # Network architecture
+  
   hidden_dim: 128         # Increased from paper's 64 for more capacity
 
   # Learning rates (paper-recommended values for best results)
@@ -55,10 +53,10 @@ agent_params:
   gamma: 0.99             # Discount factor for future rewards
   tau: 0.005              # Paper recommendation
 
-  # Replay buffer
+  
   buffer_capacity: 50000  # Large buffer for diverse samples
 
-  # Action bounds (must match environment)
+  
   action_low: -0.4        # Minimum action value for Humanoid
   action_high: 0.4        # Maximum action value for Humanoid
 
