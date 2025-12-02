@@ -1,8 +1,9 @@
 # ================================================================
 # FACMAC Configuration for MaMuJoCo Humanoid (Production v1)
 # ================================================================
-# This config matches NQMIX v1 for fair algorithm comparison
-# Using Option 1 (Balanced) hyperparameters for optimal results
+# GPU-Optimized for best results on RTX 3050
+# Matches NQMIX v1 config for fair algorithm comparison
+# Expected training time: ~5-6 hours
 
 # Algorithm selection
 algorithm: facmac
@@ -16,9 +17,9 @@ partitioning: "9|8"     # Action split: agent_0 gets 9 dims, agent_1 gets 8 dims
 # ================================================================
 # TRAINING SETTINGS
 # ================================================================
-n_episodes: 60000       # Total training episodes (reduced from 100K with better hyperparams)
+n_episodes: 100000      # Extended for full convergence on Humanoid
 max_steps: 1000         # Max timesteps per episode
-batch_size: 64          # Episodes sampled per training update
+batch_size: 64          # Optimal for stable gradients on GPU
 seed: 42                # Random seed for reproducibility
 
 # ================================================================
@@ -35,25 +36,25 @@ log_freq: 10            # Log training metrics every N episodes
 # Decays exponentially from start to end over decay_episodes
 noise_scale_start: 0.12   # Initial noise std (high exploration)
 noise_scale_end: 0.02     # Final noise std (low exploration)
-noise_decay_episodes: 1500 # Episodes to decay from start to end
+noise_decay_episodes: 3000 # Extended decay for 100K episodes
 
 # ================================================================
 # AGENT HYPERPARAMETERS
 # ================================================================
 agent_params:
   # Network architecture
-  hidden_dim: 128         # GRU hidden state size
+  hidden_dim: 128         # Increased from paper's 64 for more capacity
 
-  # Learning rates (balanced - 6x higher than original v1)
-  lr_actor: 0.0003        # Actor network learning rate
-  lr_critic: 0.0003       # Critic network learning rate
+  # Learning rates (paper-recommended values for best results)
+  lr_actor: 0.0005        # Actor network learning rate
+  lr_critic: 0.0005       # Critic network learning rate
 
   # RL hyperparameters
   gamma: 0.99             # Discount factor for future rewards
-  tau: 0.005              # Soft target update rate (increased from 0.001 for faster convergence)
+  tau: 0.005              # Paper recommendation
 
   # Replay buffer
-  buffer_capacity: 50000  # Max episodes stored (large buffer for stability)
+  buffer_capacity: 50000  # Large buffer for diverse samples
 
   # Action bounds (must match environment)
   action_low: -0.4        # Minimum action value for Humanoid

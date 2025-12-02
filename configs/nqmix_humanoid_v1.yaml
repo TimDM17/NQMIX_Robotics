@@ -1,7 +1,8 @@
 # ================================================================
 # NQMIX Configuration for MaMuJoCo Humanoid (Production v1)
 # ================================================================
-# Using Option 1 (Balanced) hyperparameters for optimal results
+# GPU-Optimized for best results on RTX 3050
+# Expected training time: ~5-6 hours
 algorithm: nqmix
 
 # ================================================================
@@ -13,9 +14,9 @@ partitioning: "9|8"
 # ================================================================
 # TRAINING SETTINGS
 # ================================================================
-n_episodes: 60000       # Reduced from 100K with better hyperparameters
+n_episodes: 100000      # Extended for full convergence on Humanoid
 max_steps: 1000
-batch_size: 64
+batch_size: 64          # Optimal for stable gradients on GPU
 seed: 42
 
 # ================================================================
@@ -30,26 +31,23 @@ log_freq: 10
 # ================================================================
 noise_scale_start: 0.12
 noise_scale_end: 0.02
-noise_decay_episodes: 1500
+noise_decay_episodes: 3000  # Extended decay for 100K episodes
 
 # ================================================================
 # AGENT HYPERPARAMETERS
 # ================================================================
 agent_params:
 
-  hidden_dim: 128
+  hidden_dim: 128       # Increased from paper's 64 for more capacity
 
-  # Learning rates (increased from 0.00005 for 6x faster learning)
-  lr_actor: 0.0003
-  lr_critic: 0.0003
-
+  # Learning rates (paper-recommended values for best results)
+  lr_actor: 0.0005
+  lr_critic: 0.0005
 
   gamma: 0.99
-  tau: 0.005              # Increased from 0.001 for faster convergence
+  tau: 0.005            # Paper recommendation
 
-
-  buffer_capacity: 50000
-
+  buffer_capacity: 50000  # Large buffer for diverse samples
 
   action_low: -0.4
   action_high: 0.4
