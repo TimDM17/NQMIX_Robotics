@@ -2,7 +2,7 @@
 # NQMIX Configuration for MaMuJoCo Humanoid (Production v1)
 # ================================================================
 # GPU-Optimized for best results on RTX 3050
-# Expected training time: ~5-6 hours
+# Expected training time: ~12 hours (with train_every=65)
 algorithm: nqmix
 
 # ================================================================
@@ -17,6 +17,8 @@ partitioning: "9|8"
 n_episodes: 100000      # Extended for full convergence on Humanoid
 max_steps: 1000
 batch_size: 64          # Optimal for stable gradients on GPU
+train_every: 65         # Train every 65 episodes (optimized for 12-hour completion)
+train_steps: 1          # One gradient update per training call
 seed: 42
 
 # ================================================================

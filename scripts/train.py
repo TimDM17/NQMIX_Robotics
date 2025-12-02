@@ -265,8 +265,8 @@ def main():
         evaluator=evaluator,
         total_episodes=config.get('n_episodes', 3000),
         batch_size=config.get('batch_size', 32),
-        train_every=1,          # Train after every episode
-        train_steps=1,          # One gradient update per episode
+        train_every=config.get('train_every', 1),          # Train after every N episodes
+        train_steps=config.get('train_steps', 1),          # Number of gradient updates per training call
         noise_scale=noise_start,
         noise_decay=noise_decay,
         min_noise=noise_end,
