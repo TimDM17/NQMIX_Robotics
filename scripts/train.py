@@ -33,7 +33,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.agents import NQMIX
+from src import NQMIX, FACMAC
 from src.envs import MaMuJoCoWrapper
 from src.training import Trainer, Evaluator
 from src.utils import load_config, Logger
@@ -99,8 +99,20 @@ def create_agent(config: dict, env: MaMuJoCoWrapper):
             action_high=agent_params.get('action_high', 0.4)
         )
     elif algorithm == 'facmac':
-        # Future: Implement FACMAC here
-        raise NotImplementedError("FACMAC not yet implemented")
+        agent = FACMAC(
+            n_agents=env.n_agents,
+            obs_dims=env.obs_dims,
+            action_dims=env.action_dims,
+            state_dim=env.state_dim,
+            hidden_dim=agent_params.get('hidden_dim', 64),
+            lr_actor=agent_params.get('lr_actor', 5e-4),
+            lr_critic=agent_params.get('lr_critic', 5e-4),
+            gamma=agent_params.get('gamma', 0.99),
+            tau=agent_params.get('tau', 0.001),
+            buffer_capacity=agent_params.get('buffer_capacity', 5000),
+            action_low=agent_params.get('action_low', -0.4),
+            action_high=agent_params.get('action_high', 0.4)
+        )
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}")
 

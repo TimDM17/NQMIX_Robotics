@@ -1,5 +1,5 @@
 """
-MaMuJoCo environment wrapper fro MARL training
+MaMuJoCo environment wrapper for MARL training
 
 Purpose:
     Wraps the MaMuJoCo (Multi-Agent MuJoCo) environment from gymnasium_robotics

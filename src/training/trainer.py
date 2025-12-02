@@ -1,5 +1,5 @@
 """
-Training loop orchestratot for MARL algorithms.
+Training loop orchestrator for MARL algorithms.
 
 Purpose:
     Manages the complete training process: collecting episodes, calling agent
@@ -262,7 +262,13 @@ class Trainer:
         loss = 0.0
         if self.losses:
             recent_losses = self.losses[-self.log_every * self.train_steps:]
-            loss = np.mean(recent_losses)
+            # Handle both dict losses (FACMAC) and float losses (NQMIX)
+            if recent_losses and isinstance(recent_losses[0], dict):
+                # FACMAC: average critic_loss only for main metric
+                loss = np.mean([l['critic_loss'] for l in recent_losses])
+            else:
+                # NQMIX: average directly
+                loss = np.mean(recent_losses)
 
         # Buffer size
         buffer_size = 0

@@ -7,7 +7,14 @@ Design: Minimal, one-line logs, essential metrics only.
 
 from typing import Dict, Optional
 from pathlib import Path
-from torch.utils.tensorboard import SummaryWriter
+
+# Optional TensorBoard support
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_AVAILABLE = True
+except ImportError:
+    SummaryWriter = None
+    TENSORBOARD_AVAILABLE = False
 
 class Logger:
     """
@@ -39,7 +46,10 @@ class Logger:
         
         self.writer = None
         if tensorboard_dir:
-            self.writer = SummaryWriter(log_dir=tensorboard_dir)
+            if TENSORBOARD_AVAILABLE:
+                self.writer = SummaryWriter(log_dir=tensorboard_dir)
+            else:
+                print("Warning: TensorBoard not available. Install with: pip install tensorboard")
     
     def info(self, message: str) -> None:
         """Print info message"""

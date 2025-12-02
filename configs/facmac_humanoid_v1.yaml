@@ -1,12 +1,8 @@
 # ================================================================
-# FACMAC Configuration for MaMuJoCo Humanoid
+# FACMAC Configuration for MaMuJoCo Humanoid (Production v1)
 # ================================================================
-# FACMAC-nonmonotonic variant: Uses non-monotonic mixing network
-# Paper shows this often outperforms monotonic version (Figure 9, pg 11)
-#
-# Key differences from NQMIX:
-# 1. Single joint actor optimizer (vs per-agent optimizers)
-# 2. Direct policy gradient (vs sign-based gradient)
+# This config matches NQMIX v1 for fair algorithm comparison
+# Using Option 1 (Balanced) hyperparameters for optimal results
 
 # Algorithm selection
 algorithm: facmac
@@ -14,15 +10,15 @@ algorithm: facmac
 # ================================================================
 # ENVIRONMENT SETTINGS
 # ================================================================
-env_name: Humanoid      # MuJoCo environment (Humanoid, Ant, HalfCheetah, etc.)
+env_name: Humanoid      # MuJoCo environment
 partitioning: "9|8"     # Action split: agent_0 gets 9 dims, agent_1 gets 8 dims
 
 # ================================================================
 # TRAINING SETTINGS
 # ================================================================
-n_episodes: 3000        # Total training episodes
-max_steps: 1000         # Max timesteps per episode (handled internally by env)
-batch_size: 16          # Episodes sampled per training update
+n_episodes: 60000       # Total training episodes (reduced from 100K with better hyperparams)
+max_steps: 1000         # Max timesteps per episode
+batch_size: 64          # Episodes sampled per training update
 seed: 42                # Random seed for reproducibility
 
 # ================================================================
@@ -46,18 +42,18 @@ noise_decay_episodes: 1500 # Episodes to decay from start to end
 # ================================================================
 agent_params:
   # Network architecture
-  hidden_dim: 64          # GRU hidden state size (paper uses 64)
+  hidden_dim: 128         # GRU hidden state size
 
-  # Learning rates
+  # Learning rates (balanced - 6x higher than original v1)
   lr_actor: 0.0003        # Actor network learning rate
   lr_critic: 0.0003       # Critic network learning rate
 
   # RL hyperparameters
   gamma: 0.99             # Discount factor for future rewards
-  tau: 0.005              # Soft target update rate (0.005 = faster than NQMIX)
+  tau: 0.005              # Soft target update rate (increased from 0.001 for faster convergence)
 
   # Replay buffer
-  buffer_capacity: 5000   # Max episodes stored (older episodes discarded)
+  buffer_capacity: 50000  # Max episodes stored (large buffer for stability)
 
   # Action bounds (must match environment)
   action_low: -0.4        # Minimum action value for Humanoid
@@ -66,4 +62,4 @@ agent_params:
 # ================================================================
 # OUTPUT SETTINGS
 # ================================================================
-save_dir: ./results/facmac_humanoid  # Where to save logs, models, TensorBoard
+save_dir: ./results/facmac_humanoid_v1  # Where to save logs, models, TensorBoard
