@@ -5,14 +5,14 @@ algorithm: nqmix
 # ================================================================
 env_name: Humanoid
 partitioning: "9|8"
-n_envs: 8               
+n_envs: 2
 
 # ================================================================
 # TRAINING SETTINGS
 # ================================================================
-n_episodes: 150000
+n_episodes: 10000
 max_steps: 1000
-batch_size: 100         
+batch_size: 100
 train_every: 1
 train_steps: 1
 seed: 42
@@ -20,27 +20,27 @@ seed: 42
 # ================================================================
 # EVALUATION SETTINGS
 # ================================================================
-eval_freq: 100           
+eval_freq: 500
 n_eval_episodes: 10
-log_freq: 10
+log_freq: 50
 
 # ================================================================
 # EXPLORATION NOISE SETTINGS
 # ================================================================
-noise_scale_start: 0.1    
-noise_scale_end: 0.0      
-noise_decay_episodes: 100 
+noise_scale_start: 0.1
+noise_scale_end: 0.0
+noise_decay_episodes: 100
 
 # ================================================================
-# BUFFER WARMUP (critical for stable training)
+# BUFFER WARMUP
 # ================================================================
-buffer_warmup: 1000       
+buffer_warmup: 200
 
 # ================================================================
 # AGENT HYPERPARAMETERS
 # ================================================================
 agent_params:
-  hidden_dim: 400         
+  hidden_dim: 400
 
   # Learning rates
   lr_actor: 0.001
@@ -60,4 +60,4 @@ agent_params:
 # ================================================================
 # OUTPUT SETTINGS
 # ================================================================
-save_dir: ./results/nqmix_humanoid_v3
+save_dir: ./results/nqmix_humanoid_v4

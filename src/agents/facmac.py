@@ -119,10 +119,13 @@ class FACMAC(BaseAgent):
         critic_params += list(self.mixer_eval.parameters())
         self.critic_params = critic_params  # Store for gradient clipping in train_step
 
+        # Reference: weight_decay: True, weight_decay_factor: 0.0001
+        # Critical for preventing Q-value explosion!
         self.critic_optimizer = torch.optim.Adam(
             critic_params,
             lr=lr_critic,
-            eps=0.01  # Reference uses optimizer_epsilon: 0.01
+            eps=0.01,  # Reference: optimizer_epsilon: 0.01
+            weight_decay=1e-4  # Reference: weight_decay_factor: 0.0001
         )
         
         # ======================================================================
@@ -142,7 +145,8 @@ class FACMAC(BaseAgent):
         self.actor_optimizer = torch.optim.Adam(
             actor_params,
             lr=lr_actor,
-            eps=0.01  # Reference: optimizer_epsilon: 0.01
+            eps=0.01,  # Reference: optimizer_epsilon: 0.01
+            weight_decay=1e-4  # Reference: weight_decay_factor: 0.0001
         )
         
         # Replay buffer (identical to NQMIX)

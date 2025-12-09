@@ -166,11 +166,13 @@ class NQMIX(BaseAgent):
         critic_params += list(self.mixer_eval.parameters())
         self.critic_params = critic_params  # Store for gradient clipping in train_step
 
-        # Use Adam optimizer as per reference (optimizer: adam)
+        # Reference: weight_decay: True, weight_decay_factor: 0.0001
+        # Critical for preventing Q-value explosion!
         self.critic_optimizer = torch.optim.Adam(
             critic_params,
             lr=lr_critic,
-            eps=0.01  # Reference: optimizer_epsilon: 0.01
+            eps=0.01,  # Reference: optimizer_epsilon: 0.01
+            weight_decay=1e-4  # Reference: weight_decay_factor: 0.0001
         )
 
 
@@ -193,7 +195,8 @@ class NQMIX(BaseAgent):
             torch.optim.Adam(
                 params,
                 lr=lr_actor,
-                eps=0.01  # Reference: optimizer_epsilon: 0.01
+                eps=0.01,  # Reference: optimizer_epsilon: 0.01
+                weight_decay=1e-4  # Reference: weight_decay_factor: 0.0001
             )
             for params in self.actor_params_list
         ]
