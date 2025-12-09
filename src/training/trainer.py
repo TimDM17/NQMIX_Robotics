@@ -19,7 +19,7 @@ Connections:
 
 import time
 import numpy as np
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Tuple, List
 
 if TYPE_CHECKING:
     from src.agents.base_agent import BaseAgent
