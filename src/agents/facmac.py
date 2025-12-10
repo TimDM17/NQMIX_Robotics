@@ -458,14 +458,23 @@ class FACMAC(BaseAgent):
         # ================================================================
         # GRADIENT UPDATE
         # ================================================================
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward(retain_graph=True)
-        torch.nn.utils.clip_grad_norm_(self.critic_params, max_norm=0.5)
+        # CRITICAL: Do ALL backward passes BEFORE any optimizer.step()
+        # PyTorch modifies parameters in-place during step(), which invalidates
+        # the computation graph needed for subsequent backward passes.
 
+        # 1. Zero all gradients first
+        self.critic_optimizer.zero_grad()
         self.actor_optimizer.zero_grad()
+
+        # 2. Compute all gradients (both backward passes)
+        critic_loss.backward(retain_graph=True)
         actor_loss.backward()
+
+        # 3. Clip gradients for stability
+        torch.nn.utils.clip_grad_norm_(self.critic_params, max_norm=0.5)
         torch.nn.utils.clip_grad_norm_(self.actor_params, max_norm=0.5)
 
+        # 4. Apply all updates (after all backward passes complete)
         self.critic_optimizer.step()
         self.actor_optimizer.step()
 

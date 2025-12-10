@@ -617,24 +617,35 @@ class NQMIX(BaseAgent):
         # ================================================================
         # GRADIENT UPDATE
         # ================================================================
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward(retain_graph=True)
-        torch.nn.utils.clip_grad_norm_(self.critic_params, max_norm=0.5)
+        # CRITICAL: Do ALL backward passes BEFORE any optimizer.step()
+        # PyTorch modifies parameters in-place during step(), which invalidates
+        # the computation graph needed for subsequent backward passes.
 
-        # Compute actor gradients (per-agent, as required by NQMIX)
+        # 1. Zero all gradients first
+        self.critic_optimizer.zero_grad()
+        for opt in self.actor_optimizers:
+            opt.zero_grad()
+
+        # 2. Compute all gradients (all backward passes)
+        critic_loss.backward(retain_graph=True)
+
+        # Compute per-agent actor losses and backward
+        avg_actor_losses = []
         for i in range(self.n_agents):
-            # Stack and sum actor losses for this agent
             actor_loss_stacked = torch.stack(actor_losses_per_agent[i], dim=1)  # [B, T, 1]
             avg_actor_loss = actor_loss_stacked.sum() / mask.sum().clamp(min=1)
-
-            self.actor_optimizers[i].zero_grad()
+            avg_actor_losses.append(avg_actor_loss)
             avg_actor_loss.backward(retain_graph=(i < self.n_agents - 1))
+
+        # 3. Clip gradients for stability
+        torch.nn.utils.clip_grad_norm_(self.critic_params, max_norm=0.5)
+        for i in range(self.n_agents):
             torch.nn.utils.clip_grad_norm_(self.actor_params_list[i], max_norm=0.5)
 
-        # Apply all gradient updates
+        # 4. Apply all updates (after all backward passes complete)
         self.critic_optimizer.step()
-        for i in range(self.n_agents):
-            self.actor_optimizers[i].step()
+        for opt in self.actor_optimizers:
+            opt.step()
 
         # Line 15-16: Soft update target networks
         # θ' ← τ·θ + (1-τ)·θ' (slow tracking for stability)
@@ -643,7 +654,7 @@ class NQMIX(BaseAgent):
         # Return losses for monitoring (consistent with FACMAC)
         return {
             'critic_loss': critic_loss.item(),
-            'actor_loss': avg_actor_loss.item()  # Last agent's loss (representative)
+            'actor_loss': avg_actor_losses[-1].item()  # Last agent's loss (representative)
         }
     
     
