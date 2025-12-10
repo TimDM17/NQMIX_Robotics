@@ -343,16 +343,102 @@ class NQMIX(BaseAgent):
                     # Clamp to correct action space bounds!
                     action = torch.clamp(
                         action,
-                        self.agent_eval[i].action_low,  
-                        self.agent_eval[i].action_high  
+                        self.agent_eval[i].action_low,
+                        self.agent_eval[i].action_high
                     )
-                
+
                 # Convert back to numpy and remove batch dimension
                 # (1, action_dim) -> (action_dim)
                 actions.append(action.cpu().numpy()[0])
                 new_hiddens.append(new_hidden)
-        
+
         return actions, new_hiddens
+
+    def select_actions_batched(
+        self,
+        observations_batch: List[List[np.ndarray]],
+        last_actions_batch: List[List[np.ndarray]],
+        hiddens_batch: List[List[torch.Tensor]],
+        explore: bool = True,
+        noise_scale: float = 0.1
+    ) -> Tuple[List[List[np.ndarray]], List[List[torch.Tensor]]]:
+        """
+        GPU-batched action selection for all environments in parallel.
+
+        Key optimization: Instead of processing n_envs sequentially,
+        batch all environments together for each agent network.
+
+        Args:
+            observations_batch: [n_envs][n_agents] observations
+            last_actions_batch: [n_envs][n_agents] last actions
+            hiddens_batch: [n_envs][n_agents] hidden states
+
+        Returns:
+            actions_batch: [n_envs][n_agents] actions
+            new_hiddens_batch: [n_envs][n_agents] new hidden states
+        """
+        n_envs = len(observations_batch)
+
+        # Reorganize: [n_envs][n_agents] -> [n_agents][n_envs]
+        # This allows batching all envs for each agent network
+        obs_per_agent = [
+            [observations_batch[env][agent] for env in range(n_envs)]
+            for agent in range(self.n_agents)
+        ]
+        last_act_per_agent = [
+            [last_actions_batch[env][agent] for env in range(n_envs)]
+            for agent in range(self.n_agents)
+        ]
+        hidden_per_agent = [
+            [hiddens_batch[env][agent] for env in range(n_envs)]
+            for agent in range(self.n_agents)
+        ]
+
+        # Process each agent with batched envs
+        actions_per_agent = []
+        new_hiddens_per_agent = []
+
+        with torch.no_grad():
+            for i in range(self.n_agents):
+                # Stack all envs for this agent: [n_envs, feature_dim]
+                obs_stacked = torch.FloatTensor(np.stack(obs_per_agent[i])).to(self.device)
+                last_act_stacked = torch.FloatTensor(np.stack(last_act_per_agent[i])).to(self.device)
+                hidden_stacked = torch.cat(hidden_per_agent[i], dim=0).to(self.device)
+
+                # Forward pass with batch_size = n_envs
+                _, action_batch, new_hidden_batch = self.agent_eval[i](
+                    obs_stacked, last_act_stacked, hidden_stacked
+                )
+
+                if explore:
+                    noise = torch.randn_like(action_batch) * noise_scale
+                    action_batch = action_batch + noise
+                    action_batch = torch.clamp(
+                        action_batch,
+                        self.agent_eval[i].action_low,
+                        self.agent_eval[i].action_high
+                    )
+
+                # Split back to list of [n_envs] actions
+                actions_np = action_batch.cpu().numpy()
+                actions_per_agent.append([actions_np[env] for env in range(n_envs)])
+
+                # Split hidden states: [n_envs, hidden_dim] -> list of [1, hidden_dim]
+                new_hiddens_per_agent.append([
+                    new_hidden_batch[env:env+1] for env in range(n_envs)
+                ])
+
+        # Reorganize back: [n_agents][n_envs] -> [n_envs][n_agents]
+        actions_batch_out = [
+            [actions_per_agent[agent][env] for agent in range(self.n_agents)]
+            for env in range(n_envs)
+        ]
+        new_hiddens_batch_out = [
+            [new_hiddens_per_agent[agent][env] for agent in range(self.n_agents)]
+            for env in range(n_envs)
+        ]
+
+        return actions_batch_out, new_hiddens_batch_out
     
 
     def init_hidden_states(self) -> List[torch.Tensor]:
@@ -372,255 +458,173 @@ class NQMIX(BaseAgent):
     
     def train_step(self, batch_size: int = 32) -> Optional[Dict[str, float]]:
         """
-        Training step implementing Algorithm 2 from NQMIX paper (CORRECTED: Batched updates).
+        NQMIX training step with BATCHED tensor operations (research standard).
 
-        FIXED: Now accumulates gradients across entire batch, then updates once.
-        Research-standard implementation: 1 gradient update per train_step (not per timestep!)
+        Key optimization: Process entire batch in parallel instead of sequential loops.
+        Implements Algorithm 2 with sign-based gradient for non-monotonic mixing.
 
-        Algorithm 2 structure:
-        1. Sample mini-batch of episodes (Line 4)
-        2. For each episode:
-           a. Initialize discount accumulator I = 1 (Line 5)
-           b. For each timestep t (Line 6):
-              - Accumulate critic loss (Lines 7-12)
-              - Accumulate actor loss (Line 13)
-              - Decay I ← γ*I (Line 14)
-        3. Single gradient update for entire batch
-        4. Soft update target networks (Lines 15-16)
-
-        Returns:
-            Average critic loss across batch (for monitoring)
+        Structure:
+        1. Sample batch as pre-padded tensors
+        2. Loop only over TIME (not episodes) - O(T) instead of O(batch*T)
+        3. Process all episodes in parallel at each timestep
+        4. Use masking for variable-length episodes
+        5. Sign-based gradient computed per-timestep but batched across episodes
         """
-        # Wait until buffer has enough episodes
         if len(self.replay_buffer) < batch_size:
             return None
 
-        # Line 4: Sample mini-batch from replay buffer (OFF-POLICY!)
-        episodes = self.replay_buffer.sample(batch_size)
+        # Get batched tensors (research standard: pre-pad and stack)
+        batch = self.replay_buffer.sample_batch(batch_size, self.device)
 
-        # Collect losses across all episodes and timesteps (avoid in-place operations)
-        critic_losses = []
-        actor_losses = [[] for _ in range(self.n_agents)]  # Per-agent loss lists
+        observations = batch['observations']      # List of [B, T, obs_dim]
+        actions = batch['actions']                # List of [B, T, action_dim]
+        last_actions = batch['last_actions']      # List of [B, T, action_dim]
+        states = batch['states']                  # [B, T, state_dim]
+        rewards = batch['rewards']                # [B, T, 1]
+        mask = batch['mask']                      # [B, T, 1]
+        max_seq_length = batch['max_seq_length']
+        B = batch['batch_size']
 
-        # Process each episode in the batch
-        for episode in episodes:
-            # Validate episode data structure
-            T = len(episode['rewards'])
+        # Initialize hidden states for entire batch
+        hiddens_eval = [agent.init_hidden(B).to(self.device) for agent in self.agent_eval]
+        hiddens_target = [agent.init_hidden(B).to(self.device) for agent in self.agent_target]
+
+        # Collect Q-values over time
+        q_taken_list = []
+        target_q_list = []
+
+        # Collect per-agent actor losses (for sign-based gradient)
+        # We need to compute sign gradient per timestep, so collect losses per timestep
+        actor_losses_per_agent = [[] for _ in range(self.n_agents)]
+
+        # Discount accumulator for actor (batched): [B, 1]
+        I = torch.ones(B, 1, device=self.device)
+
+        # ================================================================
+        # FORWARD PASS: Loop only over TIME (batch processed in parallel)
+        # ================================================================
+        for t in range(max_seq_length):
+            # Get data at timestep t for ALL episodes: [B, feature_dim]
+            obs_t = [observations[i][:, t, :] for i in range(self.n_agents)]
+            actions_t = [actions[i][:, t, :] for i in range(self.n_agents)]
+            last_actions_t = [last_actions[i][:, t, :] for i in range(self.n_agents)]
+            state_t = states[:, t, :]
+            mask_t = mask[:, t, :]  # [B, 1]
+
+            # ----- CRITIC: Evaluate Q for actions taken -----
+            q_values_eval = []
+            new_hiddens_eval = []
             for i in range(self.n_agents):
-                if len(episode['observations'][i]) != T:
-                    raise ValueError(f"Agent {i} observations length {len(episode['observations'][i])} != rewards length {T}")
-                if len(episode['actions'][i]) != T:
-                    raise ValueError(f"Agent {i} actions length {len(episode['actions'][i])} != rewards length {T}")
-                if len(episode['last_actions'][i]) != T:
-                    raise ValueError(f"Agent {i} last_actions length {len(episode['last_actions'][i])} != rewards length {T}")
-            if len(episode['states']) != T:
-                raise ValueError(f"States length {len(episode['states'])} != rewards length {T}")
+                q_val, _, new_hidden = self.agent_eval[i](
+                    obs_t[i], last_actions_t[i], hiddens_eval[i], actions_t[i]
+                )
+                q_values_eval.append(q_val)
+                new_hiddens_eval.append(new_hidden)
 
-            # Initialize hidden states for this episode
-            # Each episode starts with empty history (zero hidden states)
-            hiddens_eval = [agent.init_hidden(1).to(self.device)
-                           for agent in self.agent_eval]
-            hiddens_target = [agent.init_hidden(1).to(self.device)
-                             for agent in self.agent_target]
+            q_tot = self.mixer_eval(q_values_eval, state_t)
+            q_taken_list.append(q_tot)
 
-            # Line 5: I ← 1 (Discount accumulator for multi-step updates)
-            # Purpose: Weight gradients by temporal discount γ^t
-            I = 1.0
-
-            # Line 6: For each timestep t in episode
-            for t in range(len(episode['rewards'])):
-                # ========================================================
-                # PREPARE DATA FOR TIMESTEP t
-                # ========================================================
-                # Convert all data to PyTorch tensors and move to device
-                obs_t = [torch.FloatTensor(episode['observations'][i][t]).unsqueeze(0).to(self.device)
-                        for i in range(self.n_agents)]
-                actions_t = [torch.FloatTensor(episode['actions'][i][t]).unsqueeze(0).to(self.device)
-                            for i in range(self.n_agents)]
-                last_actions_t = [torch.FloatTensor(episode['last_actions'][i][t]).unsqueeze(0).to(self.device)
-                                 for i in range(self.n_agents)]
-                state_t = torch.FloatTensor(episode['states'][t]).unsqueeze(0).to(self.device)
-                # Reward tensor shape [1, 1] to match mixer output shape
-                reward = torch.FloatTensor([[episode['rewards'][t]]]).to(self.device)
-
-                # ========================================================
-                # CRITIC UPDATE (Algorithm 2, Lines 7-12)
-                # ========================================================
-
-                # Line 7: Q_a(τ_t^a, u_t^a) ← Agent_eval(o_t^a, u_{t-1}^a, u_t^a) ∀a
-                # Evaluate Q-values for actions that were ACTUALLY TAKEN (from buffer)
-                q_values_eval = []
-                new_hiddens_eval = []
+            # ----- TARGET: Compute target Q-values -----
+            with torch.no_grad():
+                q_values_target = []
+                new_hiddens_target = []
                 for i in range(self.n_agents):
-                    q_val, _, new_hidden = self.agent_eval[i](
-                        obs_t[i],           # Current observation
-                        last_actions_t[i],  # Previous action
-                        hiddens_eval[i],    # Current hidden state (history τ)
-                        actions_t[i]        # Action to evaluate (from buffer)
+                    _, target_action, new_hidden_target = self.agent_target[i](
+                        obs_t[i], last_actions_t[i], hiddens_target[i]
                     )
-                    q_values_eval.append(q_val)
-                    new_hiddens_eval.append(new_hidden)
-                
-                # Line 9: Q_tot ← Mixing_eval[Q_1, Q_2, ..., Q_n, s_t]
-                # Combine individual Q-values into joint Q-value
-                q_tot = self.mixer_eval(q_values_eval, state_t)
-
-                # ========================================================
-                # COMPUTE TD TARGET (Lines 8, 10-11)
-                # ========================================================
-                if t < len(episode['rewards']) - 1:  # Not terminal state
-                    # Get next state data
-                    obs_next = [torch.FloatTensor(episode['observations'][i][t+1]).unsqueeze(0).to(self.device)
-                                for i in range(self.n_agents)]
-                    state_next = torch.FloatTensor(episode['states'][t+1]).unsqueeze(0).to(self.device)
-
-                    # Compute target Q-value (no gradients needed)
-                    with torch.no_grad():
-                        q_values_target = []
-                        new_hiddens_target = []
-
-                        for i in range(self.n_agents):
-                            # Line 8: Get action from target policy
-                            # μ_a(τ_{t+1}^a|θ') - what would target policy do?
-                            _, target_action, new_hidden_target = self.agent_target[i](
-                                obs_next[i],
-                                actions_t[i],  # Last action at t (for GRU input)
-                                hiddens_target[i]
-                            )
-
-                            # FIXED: Evaluate Q-value with UPDATED hidden state
-                            # Q'_a(τ_{t+1}^a, μ_a(τ_{t+1}^a|θ'))
-                            q_val, _, _ = self.agent_target[i](
-                                obs_next[i],
-                                actions_t[i],
-                                new_hidden_target,  # FIX: Use updated hidden state!
-                                target_action  # Evaluate target policy action
-                            )
-                            q_values_target.append(q_val)
-                            new_hiddens_target.append(new_hidden_target)
-                        
-                        # Line 10: Mix target Q-values
-                        # Q'_tot ← Mixing_target[Q'_1, ..., Q'_n, s_{t+1}]
-                        q_tot_target = self.mixer_target(q_values_target, state_next)
-                        
-                        # Line 11: TD target = R + γ * Q'_tot
-                        td_target = reward + self.gamma * q_tot_target
-                else:
-                    # Terminal state: no future value
-                    td_target = reward
-
-                # Line 11: Compute TD error
-                # δ = target - current = [R + γ*Q'_tot] - Q_tot
-                td_error = td_target.detach() - q_tot
-
-                # Line 12: Critic loss = δ²
-                # Minimize squared TD error (standard Q-learning)
-                critic_loss = td_error.pow(2).mean()
-
-                # Accumulate loss (don't update yet!)
-                critic_losses.append(critic_loss)
-
-                # ========================================================
-                # DETACH HIDDEN STATES (Memory Management)
-                # ========================================================
-                # Prevents backpropagation through entire episode history
-                # (Truncated BPTT - necessary for long episodes)
-                hiddens_eval = [h.detach() for h in new_hiddens_eval]
-                if t < len(episode['rewards']) - 1:
-                    hiddens_target = [h.detach() for h in new_hiddens_target]
-
-                # ========================================================
-                # ACTOR UPDATE (Algorithm 2, Line 13 - KEY INNOVATION!)
-                # ========================================================
-                # This is what makes NQMIX different from QMIX:
-                # Sign-based gradient allows non-monotonic coordination
-                
-                # Step 1: Get current policy actions (not from buffer!)
-                current_actions = []
-                current_hiddens_for_actor = [h.detach() for h in hiddens_eval]
-                
-                for i in range(self.n_agents):
-                    # Get action from CURRENT policy μ_a(τ_t^a|θ)
-                    _, act, _ = self.agent_eval[i](
-                        obs_t[i].detach(),
-                        last_actions_t[i].detach(),
-                        current_hiddens_for_actor[i]
+                    q_val, _, _ = self.agent_target[i](
+                        obs_t[i], last_actions_t[i], new_hidden_target, target_action
                     )
-                    current_actions.append(act)
+                    q_values_target.append(q_val)
+                    new_hiddens_target.append(new_hidden_target)
 
-                # Step 2: Evaluate Q-values for current policy actions
-                q_values_for_actor = []
-                for i in range(self.n_agents):
-                    q_val, _, _ = self.agent_eval[i](
-                        obs_t[i].detach(),
-                        last_actions_t[i].detach(),
-                        current_hiddens_for_actor[i],
-                        current_actions[i]  # Evaluate current policy action
-                    )
-                    q_values_for_actor.append(q_val)
+                q_tot_target = self.mixer_target(q_values_target, state_t)
+                target_q_list.append(q_tot_target)
 
-                # Step 3: Compute joint Q-value for gradient computation
-                q_tot_for_actor = self.mixer_eval(q_values_for_actor, state_t.detach())
+            # ----- ACTOR: Sign-based gradient (NQMIX key innovation) -----
+            current_actions = []
+            q_values_for_actor = []
+            actor_hiddens = [h.detach() for h in hiddens_eval]
 
-                # Step 4: Accumulate each agent's actor loss with sign-based gradient
-                # Line 13: θ ← θ + α·I·sign(∂Q_tot/∂Q_a)·∇_θμ_a·∇_uQ_a
-                for i in range(self.n_agents):
-                    # Compute ∂Q_tot/∂Q_a (how Q_tot changes with Q_a)
-                    grad_q_tot_wrt_qa = torch.autograd.grad(
-                        q_tot_for_actor,
-                        q_values_for_actor[i],
-                        retain_graph=True,  # Keep graph for other agents
-                        create_graph=False  # Don't need second-order gradients
-                    )[0]
+            for i in range(self.n_agents):
+                _, act, _ = self.agent_eval[i](
+                    obs_t[i].detach(), last_actions_t[i].detach(), actor_hiddens[i]
+                )
+                current_actions.append(act)
 
-                    # Check for NaN/Inf gradients
-                    if torch.isnan(grad_q_tot_wrt_qa).any() or torch.isinf(grad_q_tot_wrt_qa).any():
-                        # Skip this agent's update if gradient is invalid
-                        sign_grad = torch.zeros_like(grad_q_tot_wrt_qa)
-                    else:
-                        # KEY INNOVATION: Extract sign of gradient
-                        # sign > 0: Agent helps team → gradient ASCENT (maximize Q_a)
-                        # sign < 0: Agent hurts team → gradient DESCENT (minimize Q_a)
-                        sign_grad = torch.sign(grad_q_tot_wrt_qa).detach()
+            for i in range(self.n_agents):
+                q_val, _, _ = self.agent_eval[i](
+                    obs_t[i].detach(), last_actions_t[i].detach(),
+                    actor_hiddens[i], current_actions[i]
+                )
+                q_values_for_actor.append(q_val)
 
-                    # Actor loss with sign weighting and temporal discount I
-                    # Negative sign for gradient ascent when sign_grad > 0
-                    actor_loss = -(sign_grad * q_values_for_actor[i] * I).mean()
+            q_tot_for_actor = self.mixer_eval(q_values_for_actor, state_t.detach())
 
-                    # Accumulate loss (don't update yet!)
-                    actor_losses[i].append(actor_loss)
+            # Compute sign-based gradient for each agent (batched over episodes)
+            for i in range(self.n_agents):
+                grad_q_tot_wrt_qa = torch.autograd.grad(
+                    q_tot_for_actor.sum(),  # Sum to get scalar for grad
+                    q_values_for_actor[i],
+                    retain_graph=True,
+                    create_graph=False
+                )[0]  # [B, 1]
 
-                # Line 14: I ← γ·I (Decay discount accumulator)
-                # After T steps: I = γ^T (weights later timesteps less)
-                I *= self.gamma
+                # Handle NaN/Inf
+                valid_grad = ~(torch.isnan(grad_q_tot_wrt_qa) | torch.isinf(grad_q_tot_wrt_qa))
+                sign_grad = torch.where(valid_grad, torch.sign(grad_q_tot_wrt_qa), torch.zeros_like(grad_q_tot_wrt_qa))
+                sign_grad = sign_grad.detach()
 
-        # ============================================================
-        # SINGLE GRADIENT UPDATE FOR ENTIRE BATCH
-        # ============================================================
-        # Average loss over all transitions in batch
-        avg_critic_loss = torch.stack(critic_losses).mean()
+                # Actor loss with sign weighting, temporal discount I, and mask
+                # Negative for gradient ascent when sign > 0
+                actor_loss_t = -(sign_grad * q_values_for_actor[i] * I * mask_t)
+                actor_losses_per_agent[i].append(actor_loss_t)
 
-        # CRITICAL: Compute ALL gradients BEFORE any optimizer.step()
-        # (optimizer.step() modifies parameters in-place, breaking the graph)
+            # Update hidden states
+            hiddens_eval = [h.detach() for h in new_hiddens_eval]
+            hiddens_target = [h.detach() for h in new_hiddens_target]
 
-        # Compute critic gradients
+            # Decay discount accumulator (batched)
+            I = I * self.gamma
+
+        # ================================================================
+        # COMPUTE LOSSES (vectorized over entire batch)
+        # ================================================================
+        q_taken = torch.stack(q_taken_list, dim=1)  # [B, T, 1]
+        target_q = torch.stack(target_q_list, dim=1)
+
+        # TD targets with shifted target Q
+        target_q_shifted = torch.zeros_like(target_q)
+        target_q_shifted[:, :-1, :] = target_q[:, 1:, :]
+
+        td_targets = rewards + self.gamma * target_q_shifted
+        td_error = td_targets.detach() - q_taken
+
+        # Mask for critic (exclude last timestep)
+        mask_for_critic = mask.clone()
+        mask_for_critic[:, -1, :] = 0
+
+        masked_td_error = td_error * mask_for_critic
+        critic_loss = (masked_td_error ** 2).sum() / mask_for_critic.sum().clamp(min=1)
+
+        # ================================================================
+        # GRADIENT UPDATE
+        # ================================================================
         self.critic_optimizer.zero_grad()
-        avg_critic_loss.backward(retain_graph=True)  # Keep graph for actor backwards
-        # Reference: grad_norm_clip: 0.5 (NOT 10.0!)
+        critic_loss.backward(retain_graph=True)
         torch.nn.utils.clip_grad_norm_(self.critic_params, max_norm=0.5)
 
-        # Compute ALL actor gradients (before any .step() modifies parameters!)
-        avg_actor_losses = []
+        # Compute actor gradients (per-agent, as required by NQMIX)
         for i in range(self.n_agents):
-            avg_actor_loss = torch.stack(actor_losses[i]).mean()
-            avg_actor_losses.append(avg_actor_loss.item())
+            # Stack and sum actor losses for this agent
+            actor_loss_stacked = torch.stack(actor_losses_per_agent[i], dim=1)  # [B, T, 1]
+            avg_actor_loss = actor_loss_stacked.sum() / mask.sum().clamp(min=1)
 
             self.actor_optimizers[i].zero_grad()
-            avg_actor_loss.backward(retain_graph=(i < self.n_agents - 1))  # Keep for other agents
-            # Reference: grad_norm_clip: 0.5 (NOT 10.0!)
+            avg_actor_loss.backward(retain_graph=(i < self.n_agents - 1))
             torch.nn.utils.clip_grad_norm_(self.actor_params_list[i], max_norm=0.5)
 
-        # Now apply all gradient updates
+        # Apply all gradient updates
         self.critic_optimizer.step()
         for i in range(self.n_agents):
             self.actor_optimizers[i].step()
@@ -629,8 +633,11 @@ class NQMIX(BaseAgent):
         # θ' ← τ·θ + (1-τ)·θ' (slow tracking for stability)
         self._soft_update()
 
-        # Return average losses for monitoring
-        return avg_critic_loss.item()
+        # Return losses for monitoring (consistent with FACMAC)
+        return {
+            'critic_loss': critic_loss.item(),
+            'actor_loss': avg_actor_loss.item()  # Last agent's loss (representative)
+        }
     
     
     def save(self, path: str) -> None:

@@ -218,9 +218,16 @@ def main():
     logger.info(f"  noise_decay_eps:   {config.get('noise_decay_episodes', 100)}")
     logger.info("")
 
-    # Buffer warmup
-    logger.info("Buffer Warmup:")
+    # Buffer and Exploration
+    logger.info("Buffer & Random Exploration:")
     logger.info(f"  buffer_warmup:     {config.get('buffer_warmup', config.get('batch_size', 32) * 2)}")
+    logger.info(f"  start_steps:       {config.get('start_steps', 0)}")
+    logger.info("")
+
+    # Observation Normalization
+    logger.info("Observation Normalization:")
+    logger.info(f"  normalize_obs:     {config.get('normalize_observations', True)}")
+    logger.info(f"  obs_clip_range:    {config.get('obs_clip_range', 10.0)}")
     logger.info("")
 
     # Agent parameters
@@ -279,20 +286,6 @@ def main():
     logger.info("")
 
     # ================================================================
-    # CREATE EVALUATOR
-    # ================================================================
-    # Separate environment for evaluation to avoid interference
-    eval_env = MaMuJoCoWrapper(env_name=env_name, partitioning=partitioning)
-    evaluator = Evaluator(
-        agent=agent,
-        env=eval_env,
-        logger=logger,
-        n_eval_episodes=config.get('n_eval_episodes', 10),
-        save_best=True,
-        save_path=str(save_dir / 'best_model.pth')
-    )
-
-    # ================================================================
     # CALCULATE EXPLORATION NOISE DECAY
     # ================================================================
     # Noise decays exponentially from start to end over decay_episodes
@@ -305,12 +298,43 @@ def main():
     noise_decay = (noise_end / noise_start) ** (1.0 / noise_decay_episodes)
 
     # ================================================================
-    # CREATE TRAINER
+    # SETUP OBSERVATION NORMALIZATION
     # ================================================================
-    # Buffer warmup - Reference uses buffer_warmup: 1000
-    # This ensures enough diverse experience before training starts
+    # Create normalizer FIRST so it can be shared between trainer and evaluator
+    normalize_observations = config.get('normalize_observations', True)
+    obs_clip_range = config.get('obs_clip_range', 10.0)
+    start_steps = config.get('start_steps', 0)
     buffer_warmup = config.get('buffer_warmup', config.get('batch_size', 32) * 2)
 
+    obs_normalizer = None
+    if normalize_observations:
+        from src.utils.normalization import ObservationNormalizer
+        obs_normalizer = ObservationNormalizer(
+            obs_dims=env.obs_dims,
+            clip_range=obs_clip_range
+        )
+        logger.info("Observation normalizer created (shared between trainer and evaluator)")
+    logger.info("")
+
+    # ================================================================
+    # CREATE EVALUATOR
+    # ================================================================
+    # Separate environment for evaluation to avoid interference
+    # IMPORTANT: Pass the same normalizer to ensure consistent evaluation!
+    eval_env = MaMuJoCoWrapper(env_name=env_name, partitioning=partitioning)
+    evaluator = Evaluator(
+        agent=agent,
+        env=eval_env,
+        logger=logger,
+        n_eval_episodes=config.get('n_eval_episodes', 10),
+        save_best=True,
+        save_path=str(save_dir / 'best_model.pth'),
+        obs_normalizer=obs_normalizer  # Share normalizer with trainer!
+    )
+
+    # ================================================================
+    # CREATE TRAINER
+    # ================================================================
     trainer = Trainer(
         agent=agent,
         env=env,
@@ -323,10 +347,15 @@ def main():
         noise_scale=noise_start,
         noise_decay=noise_decay,
         min_noise=noise_end,
+        start_steps=start_steps,                           # Random exploration timesteps
         eval_every=config.get('eval_freq', 100),
-        min_buffer_size=buffer_warmup,  # Use buffer_warmup from config
-        log_every=config.get('log_freq', 10)
+        min_buffer_size=buffer_warmup,
+        log_every=config.get('log_freq', 10),
+        normalize_observations=False,                      # Don't create new normalizer
+        obs_clip_range=obs_clip_range
     )
+    # Inject the shared normalizer into trainer
+    trainer.obs_normalizer = obs_normalizer
 
     # ================================================================
     # RUN TRAINING

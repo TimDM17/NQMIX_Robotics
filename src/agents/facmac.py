@@ -192,15 +192,15 @@ class FACMAC(BaseAgent):
         """Select actions (100% identical to NQMIX)"""
         actions = []
         new_hiddens = []
-        
+
         with torch.no_grad():
             for i in range(self.n_agents):
                 obs = torch.FloatTensor(observations[i]).unsqueeze(0).to(self.device)
                 last_act = torch.FloatTensor(last_actions[i]).unsqueeze(0).to(self.device)
                 hidden = hiddens[i].to(self.device)
-                
+
                 _, action, new_hidden = self.agent_eval[i](obs, last_act, hidden)
-                
+
                 if explore:
                     noise = torch.randn_like(action) * noise_scale
                     action = action + noise
@@ -209,11 +209,97 @@ class FACMAC(BaseAgent):
                         self.agent_eval[i].action_low,
                         self.agent_eval[i].action_high
                     )
-                
+
                 actions.append(action.cpu().numpy()[0])
                 new_hiddens.append(new_hidden)
-        
+
         return actions, new_hiddens
+
+    def select_actions_batched(
+        self,
+        observations_batch: List[List[np.ndarray]],
+        last_actions_batch: List[List[np.ndarray]],
+        hiddens_batch: List[List[torch.Tensor]],
+        explore: bool = True,
+        noise_scale: float = 0.1
+    ) -> Tuple[List[List[np.ndarray]], List[List[torch.Tensor]]]:
+        """
+        GPU-batched action selection for all environments in parallel.
+
+        Key optimization: Instead of processing n_envs sequentially,
+        batch all environments together for each agent network.
+
+        Args:
+            observations_batch: [n_envs][n_agents] observations
+            last_actions_batch: [n_envs][n_agents] last actions
+            hiddens_batch: [n_envs][n_agents] hidden states
+
+        Returns:
+            actions_batch: [n_envs][n_agents] actions
+            new_hiddens_batch: [n_envs][n_agents] new hidden states
+        """
+        n_envs = len(observations_batch)
+
+        # Reorganize: [n_envs][n_agents] -> [n_agents][n_envs]
+        # This allows batching all envs for each agent network
+        obs_per_agent = [
+            [observations_batch[env][agent] for env in range(n_envs)]
+            for agent in range(self.n_agents)
+        ]
+        last_act_per_agent = [
+            [last_actions_batch[env][agent] for env in range(n_envs)]
+            for agent in range(self.n_agents)
+        ]
+        hidden_per_agent = [
+            [hiddens_batch[env][agent] for env in range(n_envs)]
+            for agent in range(self.n_agents)
+        ]
+
+        # Process each agent with batched envs
+        actions_per_agent = []
+        new_hiddens_per_agent = []
+
+        with torch.no_grad():
+            for i in range(self.n_agents):
+                # Stack all envs for this agent: [n_envs, feature_dim]
+                obs_stacked = torch.FloatTensor(np.stack(obs_per_agent[i])).to(self.device)
+                last_act_stacked = torch.FloatTensor(np.stack(last_act_per_agent[i])).to(self.device)
+                hidden_stacked = torch.cat(hidden_per_agent[i], dim=0).to(self.device)
+
+                # Forward pass with batch_size = n_envs
+                _, action_batch, new_hidden_batch = self.agent_eval[i](
+                    obs_stacked, last_act_stacked, hidden_stacked
+                )
+
+                if explore:
+                    noise = torch.randn_like(action_batch) * noise_scale
+                    action_batch = action_batch + noise
+                    action_batch = torch.clamp(
+                        action_batch,
+                        self.agent_eval[i].action_low,
+                        self.agent_eval[i].action_high
+                    )
+
+                # Split back to list of [n_envs] actions
+                actions_np = action_batch.cpu().numpy()
+                actions_per_agent.append([actions_np[env] for env in range(n_envs)])
+
+                # Split hidden states: [n_envs, hidden_dim] -> list of [1, hidden_dim]
+                new_hiddens_per_agent.append([
+                    new_hidden_batch[env:env+1] for env in range(n_envs)
+                ])
+
+        # Reorganize back: [n_agents][n_envs] -> [n_envs][n_agents]
+        actions_batch_out = [
+            [actions_per_agent[agent][env] for agent in range(self.n_agents)]
+            for env in range(n_envs)
+        ]
+        new_hiddens_batch_out = [
+            [new_hiddens_per_agent[agent][env] for agent in range(self.n_agents)]
+            for env in range(n_envs)
+        ]
+
+        return actions_batch_out, new_hiddens_batch_out
     
     def init_hidden_states(self) -> List[torch.Tensor]:
         """Initialize hidden states (100% identical to NQMIX)"""
@@ -221,166 +307,161 @@ class FACMAC(BaseAgent):
     
     def train_step(self, batch_size: int = 32) -> Optional[Dict[str, float]]:
         """
-        FACMAC training step with centralised policy gradient (CORRECTED: Batched updates)
+        FACMAC training step with BATCHED tensor operations (research standard).
 
-        FIXED: Now accumulates gradients across entire batch, then updates once.
-        Research-standard implementation: 1 gradient update per train_step (not per timestep!)
+        Key optimization: Process entire batch in parallel instead of sequential loops.
+        Reference: facmac-main/src/learners/facmac_learner.py
+
+        Structure:
+        1. Sample batch as pre-padded tensors
+        2. Loop only over TIME (not episodes) - O(T) instead of O(batch*T)
+        3. Process all episodes in parallel at each timestep
+        4. Use masking for variable-length episodes
         """
         if len(self.replay_buffer) < batch_size:
             return None
 
-        episodes = self.replay_buffer.sample(batch_size)
+        # Get batched tensors (research standard: pre-pad and stack)
+        batch = self.replay_buffer.sample_batch(batch_size, self.device)
 
-        # Collect losses across all episodes and timesteps (avoid in-place operations)
-        critic_losses = []
-        actor_losses = []
+        observations = batch['observations']      # List of [B, T, obs_dim]
+        actions = batch['actions']                # List of [B, T, action_dim]
+        last_actions = batch['last_actions']      # List of [B, T, action_dim]
+        states = batch['states']                  # [B, T, state_dim]
+        rewards = batch['rewards']                # [B, T, 1]
+        mask = batch['mask']                      # [B, T, 1]
+        max_seq_length = batch['max_seq_length']
+        B = batch['batch_size']
 
-        for episode in episodes:
-            # Validate episode
-            T = len(episode['rewards'])
+        # Initialize hidden states for entire batch
+        hiddens_eval = [agent.init_hidden(B).to(self.device) for agent in self.agent_eval]
+        hiddens_target = [agent.init_hidden(B).to(self.device) for agent in self.agent_target]
+
+        # Collect Q-values over time (for critic)
+        q_taken_list = []
+
+        # Collect target Q-values over time
+        target_q_list = []
+
+        # Collect actor outputs over time
+        actor_actions_list = []
+        actor_q_list = []
+
+        # ================================================================
+        # FORWARD PASS: Loop only over TIME (batch processed in parallel)
+        # ================================================================
+        for t in range(max_seq_length):
+            # Get data at timestep t for ALL episodes: [B, feature_dim]
+            obs_t = [observations[i][:, t, :] for i in range(self.n_agents)]
+            actions_t = [actions[i][:, t, :] for i in range(self.n_agents)]
+            last_actions_t = [last_actions[i][:, t, :] for i in range(self.n_agents)]
+            state_t = states[:, t, :]  # [B, state_dim]
+
+            # ----- CRITIC: Evaluate Q for actions taken -----
+            q_values_eval = []
+            new_hiddens_eval = []
             for i in range(self.n_agents):
-                assert len(episode['observations'][i]) == T
-                assert len(episode['actions'][i]) == T
-                assert len(episode['last_actions'][i]) == T
-            assert len(episode['states']) == T
+                q_val, _, new_hidden = self.agent_eval[i](
+                    obs_t[i], last_actions_t[i], hiddens_eval[i], actions_t[i]
+                )
+                q_values_eval.append(q_val)  # [B, 1]
+                new_hiddens_eval.append(new_hidden)
 
-            # Initialize hiddens
-            hiddens_eval = [agent.init_hidden(1).to(self.device) for agent in self.agent_eval]
-            hiddens_target = [agent.init_hidden(1).to(self.device) for agent in self.agent_target]
+            q_tot = self.mixer_eval(q_values_eval, state_t)  # [B, 1]
+            q_taken_list.append(q_tot)
 
-            for t in range(len(episode['rewards'])):
-                # Prepare data
-                obs_t = [torch.FloatTensor(episode['observations'][i][t]).unsqueeze(0).to(self.device)
-                        for i in range(self.n_agents)]
-                actions_t = [torch.FloatTensor(episode['actions'][i][t]).unsqueeze(0).to(self.device)
-                            for i in range(self.n_agents)]
-                last_actions_t = [torch.FloatTensor(episode['last_actions'][i][t]).unsqueeze(0).to(self.device)
-                                 for i in range(self.n_agents)]
-                state_t = torch.FloatTensor(episode['states'][t]).unsqueeze(0).to(self.device)
-                reward = torch.FloatTensor([[episode['rewards'][t]]]).to(self.device)
-
-                # ============================================================
-                # CRITIC LOSS ACCUMULATION (No backward/step yet!)
-                # ============================================================
-                q_values_eval = []
-                new_hiddens_eval = []
+            # ----- TARGET: Compute target Q-values -----
+            with torch.no_grad():
+                q_values_target = []
+                new_hiddens_target = []
                 for i in range(self.n_agents):
-                    q_val, _, new_hidden = self.agent_eval[i](
-                        obs_t[i],
-                        last_actions_t[i],
-                        hiddens_eval[i],
-                        actions_t[i]
+                    # Get target action
+                    _, target_action, new_hidden_target = self.agent_target[i](
+                        obs_t[i], last_actions_t[i], hiddens_target[i]
                     )
-                    q_values_eval.append(q_val)
-                    new_hiddens_eval.append(new_hidden)
-
-                q_tot = self.mixer_eval(q_values_eval, state_t)
-
-                # Compute TD target
-                if t < len(episode['rewards']) - 1:
-                    obs_next = [torch.FloatTensor(episode['observations'][i][t+1]).unsqueeze(0).to(self.device)
-                                for i in range(self.n_agents)]
-                    state_next = torch.FloatTensor(episode['states'][t+1]).unsqueeze(0).to(self.device)
-
-                    with torch.no_grad():
-                        q_values_target = []
-                        new_hiddens_target = []
-
-                        for i in range(self.n_agents):
-                            # First get the action and updated hidden state
-                            _, target_action, new_hidden_target = self.agent_target[i](
-                                obs_next[i],
-                                actions_t[i],  # Last action at time t
-                                hiddens_target[i]
-                            )
-
-                            # FIXED: Use new_hidden_target (not hiddens_target[i]) for Q evaluation
-                            # This ensures Q is evaluated with the correct history
-                            q_val, _, _ = self.agent_target[i](
-                                obs_next[i],
-                                actions_t[i],
-                                new_hidden_target,  # FIX: Use updated hidden state
-                                target_action
-                            )
-                            q_values_target.append(q_val)
-                            new_hiddens_target.append(new_hidden_target)
-
-                        q_tot_target = self.mixer_target(q_values_target, state_next)
-                        td_target = reward + self.gamma * q_tot_target
-                else:
-                    td_target = reward
-
-                td_error = td_target.detach() - q_tot
-                critic_loss = td_error.pow(2).mean()
-
-                # Accumulate loss (don't update yet!)
-                critic_losses.append(critic_loss)
-
-                # Detach hiddens
-                hiddens_eval = [h.detach() for h in new_hiddens_eval]
-                if t < len(episode['rewards']) - 1:
-                    hiddens_target = [h.detach() for h in new_hiddens_target]
-
-                # ============================================================
-                # ACTOR LOSS ACCUMULATION (No backward/step yet!)
-                # ============================================================
-                current_actions = []
-                current_hiddens = [h.detach() for h in hiddens_eval]
-
-                for i in range(self.n_agents):
-                    _, act, _ = self.agent_eval[i](
-                        obs_t[i].detach(),
-                        last_actions_t[i].detach(),
-                        current_hiddens[i]
+                    # Evaluate Q for target action (with updated hidden)
+                    q_val, _, _ = self.agent_target[i](
+                        obs_t[i], last_actions_t[i], new_hidden_target, target_action
                     )
-                    current_actions.append(act)
+                    q_values_target.append(q_val)
+                    new_hiddens_target.append(new_hidden_target)
 
-                # Evaluate Q-values for current policy actions
-                q_values_for_actor = []
-                for i in range(self.n_agents):
-                    q_val, _, _ = self.agent_eval[i](
-                        obs_t[i].detach(),
-                        last_actions_t[i].detach(),
-                        current_hiddens[i],
-                        current_actions[i]
-                    )
-                    q_values_for_actor.append(q_val)
+                q_tot_target = self.mixer_target(q_values_target, state_t)
+                target_q_list.append(q_tot_target)
 
-                # Mix Q-values
-                q_tot_for_actor = self.mixer_eval(q_values_for_actor, state_t.detach())
+            # ----- ACTOR: Get current policy actions and Q-values -----
+            current_actions = []
+            q_values_for_actor = []
+            actor_hiddens = [h.detach() for h in hiddens_eval]
 
-                # FACMAC: Centralized policy gradient with action regularization
-                # Reference (facmac_learner.py:137): pg_loss = -chosen_action_qvals.mean() + (pi**2).mean() * 1e-3
-                actions_tensor = torch.cat(current_actions, dim=-1)  # Combine all agent actions
-                action_reg = (actions_tensor ** 2).mean() * 1e-3  # Prevents extreme actions
-                actor_loss = -q_tot_for_actor.mean() + action_reg
+            for i in range(self.n_agents):
+                _, act, _ = self.agent_eval[i](
+                    obs_t[i].detach(), last_actions_t[i].detach(), actor_hiddens[i]
+                )
+                current_actions.append(act)
 
-                # Accumulate loss (don't update yet!)
-                actor_losses.append(actor_loss)
+            for i in range(self.n_agents):
+                q_val, _, _ = self.agent_eval[i](
+                    obs_t[i].detach(), last_actions_t[i].detach(),
+                    actor_hiddens[i], current_actions[i]
+                )
+                q_values_for_actor.append(q_val)
 
-        # ============================================================
-        # SINGLE GRADIENT UPDATE FOR ENTIRE BATCH
-        # ============================================================
-        # Average loss over all transitions in batch
-        avg_critic_loss = torch.stack(critic_losses).mean()
-        avg_actor_loss = torch.stack(actor_losses).mean()
+            q_tot_actor = self.mixer_eval(q_values_for_actor, state_t.detach())
+            actor_q_list.append(q_tot_actor)
+            actor_actions_list.append(torch.cat(current_actions, dim=-1))
 
-        # CRITICAL: Compute BOTH gradients BEFORE any optimizer.step()
-        # (optimizer.step() modifies parameters in-place, breaking the graph)
+            # Update hidden states (detach to prevent BPTT through entire episode)
+            hiddens_eval = [h.detach() for h in new_hiddens_eval]
+            hiddens_target = [h.detach() for h in new_hiddens_target]
 
-        # Compute critic gradients
+        # ================================================================
+        # COMPUTE LOSSES (vectorized over entire batch)
+        # ================================================================
+        # Stack over time: [B, T, 1]
+        q_taken = torch.stack(q_taken_list, dim=1)
+        target_q = torch.stack(target_q_list, dim=1)
+        actor_q = torch.stack(actor_q_list, dim=1)
+        actor_actions = torch.stack(actor_actions_list, dim=1)  # [B, T, total_action_dim]
+
+        # Compute TD targets: r_t + gamma * Q'(s_{t+1}, a'_{t+1})
+        # Shift target_q by 1 timestep (target at t uses Q from t+1)
+        target_q_shifted = torch.zeros_like(target_q)
+        target_q_shifted[:, :-1, :] = target_q[:, 1:, :]  # Q'(s_{t+1})
+
+        # TD target = r + gamma * Q'(s_{t+1}) for non-terminal
+        # For last timestep (or padded), just use reward
+        td_targets = rewards + self.gamma * target_q_shifted
+
+        # TD error
+        td_error = (td_targets.detach() - q_taken)
+
+        # Masked TD error (ignore padded timesteps)
+        # Also mask the last valid timestep of each episode (no next state)
+        mask_for_critic = mask.clone()
+        mask_for_critic[:, -1, :] = 0  # Last timestep has no valid target
+
+        masked_td_error = td_error * mask_for_critic
+        critic_loss = (masked_td_error ** 2).sum() / mask_for_critic.sum().clamp(min=1)
+
+        # Actor loss: maximize Q, with action regularization
+        # Reference: pg_loss = -chosen_action_qvals.mean() + (pi**2).mean() * 1e-3
+        mask_for_actor = mask[:, :-1, :]  # Exclude last timestep
+        actor_q_masked = actor_q[:, :-1, :] * mask_for_actor
+        action_reg = (actor_actions[:, :-1, :] ** 2 * mask_for_actor).sum() / mask_for_actor.sum().clamp(min=1)
+        actor_loss = -actor_q_masked.sum() / mask_for_actor.sum().clamp(min=1) + action_reg * 1e-3
+
+        # ================================================================
+        # GRADIENT UPDATE
+        # ================================================================
         self.critic_optimizer.zero_grad()
-        avg_critic_loss.backward(retain_graph=True)  # Keep graph for actor backward
-        # Reference: grad_norm_clip: 0.5 (NOT 10.0!)
+        critic_loss.backward(retain_graph=True)
         torch.nn.utils.clip_grad_norm_(self.critic_params, max_norm=0.5)
 
-        # Compute actor gradients (before critic.step() modifies parameters!)
         self.actor_optimizer.zero_grad()
-        avg_actor_loss.backward()  # Can release graph now
-        # Reference: grad_norm_clip: 0.5 (NOT 10.0!)
+        actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor_params, max_norm=0.5)
 
-        # Now apply both gradient updates
         self.critic_optimizer.step()
         self.actor_optimizer.step()
 
@@ -388,8 +469,8 @@ class FACMAC(BaseAgent):
         self._soft_update()
 
         return {
-            'critic_loss': avg_critic_loss.item(),
-            'actor_loss': avg_actor_loss.item()
+            'critic_loss': critic_loss.item(),
+            'actor_loss': actor_loss.item()
         }
     
     def save(self, path: str) -> None:

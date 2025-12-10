@@ -3,12 +3,13 @@ Evaluator for running deterministic evaluation episodes.
 """
 
 import numpy as np
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from src.agents.base_agent import BaseAgent
     from src.envs.mamujoco_wrapper import MaMuJoCoWrapper
     from src.utils.logger import Logger
+    from src.utils.normalization import ObservationNormalizer
 
 
 class Evaluator:
@@ -16,6 +17,9 @@ class Evaluator:
     Runs deterministic evaluation episodes without exploration noise.
 
     Used to assess the agent's true performance during training.
+
+    IMPORTANT: If observation normalization is used during training,
+    the same normalizer must be passed here to ensure consistent evaluation.
     """
 
     def __init__(
@@ -25,7 +29,8 @@ class Evaluator:
         logger: "Logger",
         n_eval_episodes: int = 10,
         save_best: bool = True,
-        save_path: str = "checkpoints/best_model"
+        save_path: str = "checkpoints/best_model",
+        obs_normalizer: Optional["ObservationNormalizer"] = None
     ):
         """
         Initialize the evaluator.
@@ -37,6 +42,7 @@ class Evaluator:
             n_eval_episodes: Number of episodes to run per evaluation
             save_best: Whether to save the best model
             save_path: Path to save the best model
+            obs_normalizer: Observation normalizer (must match training normalizer!)
         """
         self.agent = agent
         self.env = env
@@ -44,6 +50,7 @@ class Evaluator:
         self.n_eval_episodes = n_eval_episodes
         self.save_best = save_best
         self.save_path = save_path
+        self.obs_normalizer = obs_normalizer
 
         self.best_reward = float('-inf')
 
@@ -110,6 +117,10 @@ class Evaluator:
         # Convert observations dict to list
         observations = [obs_dict[agent_id] for agent_id in self.env.possible_agents]
 
+        # Normalize observations (using learned statistics, NOT updating them)
+        if self.obs_normalizer is not None:
+            observations = self.obs_normalizer.normalize(observations, update=False)
+
         total_reward = 0.0
         episode_length = 0
         done = False
@@ -131,6 +142,11 @@ class Evaluator:
 
             # Update observations
             observations = [obs_dict[agent_id] for agent_id in self.env.possible_agents]
+
+            # Normalize new observations (NOT updating statistics during eval)
+            if self.obs_normalizer is not None:
+                observations = self.obs_normalizer.normalize(observations, update=False)
+
             last_actions = actions
 
             # Accumulate reward (shared reward for all agents)

@@ -32,7 +32,7 @@ class BaseAgent(ABC):
     
     @abstractmethod
     def select_actions(
-        self, 
+        self,
         observations: List[np.ndarray],
         last_actions: List[np.ndarray],
         hiddens: List[torch.Tensor],
@@ -40,20 +40,65 @@ class BaseAgent(ABC):
         noise_scale: float = 0.1
     ) -> Tuple[List[np.ndarray], List[torch.Tensor]]:
         """
-        Select actions for all agents.
-        
+        Select actions for all agents (single environment).
+
         Args:
             observations: List of observations per agent
             last_actions: List of previous actions per agent
             hiddens: List of recurrent hidden states (if applicable)
             explore: Whether to add exploration noise
             noise_scale: Scale of exploration noise
-        
+
         Returns:
             actions: List of selected actions per agent
             new_hiddens: Updated hidden states
         """
         pass
+
+    def select_actions_batched(
+        self,
+        observations_batch: List[List[np.ndarray]],
+        last_actions_batch: List[List[np.ndarray]],
+        hiddens_batch: List[List[torch.Tensor]],
+        explore: bool = True,
+        noise_scale: float = 0.1
+    ) -> Tuple[List[List[np.ndarray]], List[List[torch.Tensor]]]:
+        """
+        Select actions for all agents across multiple environments (batched).
+
+        This is a performance optimization that processes all environments
+        in parallel on the GPU instead of sequentially.
+
+        Args:
+            observations_batch: [n_envs][n_agents] observations
+            last_actions_batch: [n_envs][n_agents] last actions
+            hiddens_batch: [n_envs][n_agents] hidden states
+            explore: Whether to add exploration noise
+            noise_scale: Scale of exploration noise
+
+        Returns:
+            actions_batch: [n_envs][n_agents] actions
+            new_hiddens_batch: [n_envs][n_agents] new hidden states
+
+        Default implementation calls select_actions sequentially.
+        Override for GPU-batched implementation.
+        """
+        # Default: sequential processing (override for batched)
+        actions_batch = []
+        new_hiddens_batch = []
+
+        for env_idx in range(len(observations_batch)):
+            actions, hiddens = self.select_actions(
+                observations_batch[env_idx],
+                last_actions_batch[env_idx],
+                hiddens_batch[env_idx],
+                explore=explore,
+                noise_scale=noise_scale
+            )
+            actions_batch.append(actions)
+            new_hiddens_batch.append(hiddens)
+
+        return actions_batch, new_hiddens_batch
     
     @abstractmethod
     def train_step(self, batch_size: int) -> Optional[float]:

@@ -10,6 +10,8 @@ Key Concepts:
     - Episode Collection: Run policy in environment, store experience
     - Off-Policy Training: Learn from past episodes stored in replay buffer
     - Exploration Decay: Start with high noise, gradually reduce for exploitation
+    - Observation Normalization: Running mean/std for stable training
+    - Start Steps: Random exploration before policy learning
 
 Connections:
     - Uses: BaseAgent (for training), MaMuJoCo (environment),
@@ -20,6 +22,8 @@ Connections:
 import time
 import numpy as np
 from typing import TYPE_CHECKING, Optional, Tuple, List
+
+from src.utils.normalization import ObservationNormalizer
 
 if TYPE_CHECKING:
     from src.agents.base_agent import BaseAgent
@@ -38,7 +42,7 @@ class Trainer:
     def __init__(
         self,
         agent: "BaseAgent",
-        env, 
+        env,
         logger: "Logger",
         evaluator: Optional["Evaluator"] = None,
         # Training parameters
@@ -50,12 +54,16 @@ class Trainer:
         noise_scale: float = 0.1,
         noise_decay: float = 1.0,
         min_noise: float = 0.01,
+        start_steps: int = 0,
         # Evaluation parameters
         eval_every: int = 100,
         # Buffer parameters
         min_buffer_size: int = 100,
         # Logging parameters
-        log_every: int = 10
+        log_every: int = 10,
+        # Normalization parameters
+        normalize_observations: bool = True,
+        obs_clip_range: float = 10.0
     ):
         """
         Initialize the trainer.
@@ -72,9 +80,12 @@ class Trainer:
             noise_scale: Initial exploration noise scale
             noise_decay: Noise decay factor per episode
             min_noise: Minimum noise scale
+            start_steps: Number of initial timesteps with random actions
             eval_every: Evaluate every N episodes
             min_buffer_size: Minimum buffer size before training starts
             log_every: Log training metrics every N episodes
+            normalize_observations: Whether to normalize observations
+            obs_clip_range: Clip range for normalized observations
         """
         self.agent = agent
         self.env = env
@@ -88,7 +99,6 @@ class Trainer:
         if self.is_vectorized:
             self.logger.info(f"Using vectorized training with {self.n_envs} parallel environments")
 
-
         # Training parameters
         self.total_episodes = total_episodes
         self.batch_size = batch_size
@@ -100,6 +110,7 @@ class Trainer:
         self.noise_decay = noise_decay
         self.min_noise = min_noise
         self.current_noise = noise_scale
+        self.start_steps = start_steps
 
         # Evaluation parameters
         self.eval_every = eval_every
@@ -109,6 +120,17 @@ class Trainer:
 
         # Logging parameters
         self.log_every = log_every
+
+        # Observation normalization
+        self.normalize_observations = normalize_observations
+        if normalize_observations:
+            self.obs_normalizer = ObservationNormalizer(
+                obs_dims=env.obs_dims,
+                clip_range=obs_clip_range
+            )
+            self.logger.info("Using observation normalization (running mean/std)")
+        else:
+            self.obs_normalizer = None
 
         # Training state
         self.total_timesteps = 0
@@ -180,6 +202,11 @@ class Trainer:
         """
         Collect a single training episode.
 
+        Features:
+            - Observation normalization (running mean/std)
+            - Start steps random exploration
+            - Proper hidden state management
+
         Returns:
             Tuple of (episode_reward, episode_length)
         """
@@ -194,6 +221,10 @@ class Trainer:
 
         # Convert observations to list
         observations = [obs_dict[agent_id] for agent_id in self.env.possible_agents]
+
+        # Normalize observations if enabled
+        if self.obs_normalizer is not None:
+            observations = self.obs_normalizer.normalize(observations, update=True)
 
         # Episode storage
         episode_data = {
@@ -218,17 +249,28 @@ class Trainer:
             state = np.concatenate(observations)
             episode_data['states'].append(state)
 
-            # Select actions with exploration
-            actions, hiddens = self.agent.select_actions(
-                observations=observations,
-                last_actions=last_actions,
-                hiddens=hiddens,
-                explore=True,
-                noise_scale=self.current_noise
-            )
-
-            # Detach hidden states to prevent gradient flow through episode
-            hiddens = [h.detach() if hasattr(h, 'detach') else h for h in hiddens]
+            # Select actions: random during start_steps, then policy
+            if self.total_timesteps < self.start_steps:
+                # Random exploration during start_steps
+                actions = [
+                    np.random.uniform(
+                        self.agent.action_low,
+                        self.agent.action_high,
+                        size=self.env.action_dims[i]
+                    )
+                    for i in range(self.env.n_agents)
+                ]
+            else:
+                # Policy-based action selection
+                actions, hiddens = self.agent.select_actions(
+                    observations=observations,
+                    last_actions=last_actions,
+                    hiddens=hiddens,
+                    explore=True,
+                    noise_scale=self.current_noise
+                )
+                # Detach hidden states to prevent gradient flow through episode
+                hiddens = [h.detach() if hasattr(h, 'detach') else h for h in hiddens]
 
             # Store actions
             for i in range(self.env.n_agents):
@@ -246,6 +288,11 @@ class Trainer:
 
             # Update for next step
             observations = [obs_dict[agent_id] for agent_id in self.env.possible_agents]
+
+            # Normalize new observations
+            if self.obs_normalizer is not None:
+                observations = self.obs_normalizer.normalize(observations, update=True)
+
             last_actions = actions
 
             total_reward += reward
@@ -267,24 +314,31 @@ class Trainer:
         """
         Collect episodes from vectorized environments in parallel.
 
-        This method runs all environments simultaneously and collects
-        complete episodes from each. Returns when all environments
-        have completed one episode.
+        Features:
+            - GPU-batched action selection (all envs in single forward pass)
+            - Observation normalization (running mean/std)
+            - Start steps random exploration
 
         Returns:
             episode_rewards: List of rewards from each environment
             episode_lengths: List of lengths from each environment
         """
         # Reset all environments
-        observations_list = self.env.reset()  # [n_envs, n_agents, obs_dim]
+        observations_list = self.env.reset()  # [n_envs][n_agents]
 
-        # Initialize hidden states for each environment
+        # Normalize observations if enabled
+        if self.obs_normalizer is not None:
+            observations_list = self.obs_normalizer.normalize_batch(
+                observations_list, update=True
+            )
+
+        # Initialize hidden states for each environment: [n_envs][n_agents]
         hiddens_list = [
             self.agent.init_hidden_states()
             for _ in range(self.n_envs)
         ]
 
-        # Initialize last actions for each environment
+        # Initialize last actions for each environment: [n_envs][n_agents]
         last_actions_list = [
             [np.zeros(self.env.action_dims[i]) for i in range(self.env.n_agents)]
             for _ in range(self.n_envs)
@@ -308,92 +362,109 @@ class Trainer:
         episode_lengths = [0] * self.n_envs
 
         while not all(dones):
-            # Prepare batched observations for agent
-            # Only process environments that aren't done yet
+            # Get indices of active (not done) environments
             active_indices = [i for i, done in enumerate(dones) if not done]
-
             if not active_indices:
                 break
 
-            # Get actions for all active environments (batched)
-            actions_list = []
-            new_hiddens_list = []
+            # ================================================================
+            # ACTION SELECTION (random during start_steps, then policy)
+            # ================================================================
+            if self.total_timesteps < self.start_steps:
+                # Random exploration during start_steps
+                active_actions = [
+                    [
+                        np.random.uniform(
+                            self.agent.action_low,
+                            self.agent.action_high,
+                            size=self.env.action_dims[agent_idx]
+                        )
+                        for agent_idx in range(self.env.n_agents)
+                    ]
+                    for _ in active_indices
+                ]
+                # Keep hidden states unchanged during random exploration
+                active_new_hiddens = [hiddens_list[i] for i in active_indices]
+            else:
+                # GPU-BATCHED ACTION SELECTION (key optimization)
+                active_obs = [observations_list[i] for i in active_indices]
+                active_last_actions = [last_actions_list[i] for i in active_indices]
+                active_hiddens = [hiddens_list[i] for i in active_indices]
 
-            for env_idx in range(self.n_envs):
-                if dones[env_idx]:
-                    # Placeholder for done environments
-                    actions_list.append(None)
-                    new_hiddens_list.append(None)
-                else:
-                    # Select actions for this environment
-                    actions, hiddens = self.agent.select_actions(
-                        observations=observations_list[env_idx],
-                        last_actions=last_actions_list[env_idx],
-                        hiddens=hiddens_list[env_idx],
-                        explore=True,
-                        noise_scale=self.current_noise
+                # Single batched call to agent (GPU parallel processing)
+                active_actions, active_new_hiddens = self.agent.select_actions_batched(
+                    observations_batch=active_obs,
+                    last_actions_batch=active_last_actions,
+                    hiddens_batch=active_hiddens,
+                    explore=True,
+                    noise_scale=self.current_noise
+                )
+
+            # Detach hidden states and map back to full list
+            actions_list = [None] * self.n_envs
+            for idx, env_idx in enumerate(active_indices):
+                actions_list[env_idx] = active_actions[idx]
+                # Detach hidden states to prevent gradient flow through episode
+                hiddens_list[env_idx] = [
+                    h.detach() if hasattr(h, 'detach') else h
+                    for h in active_new_hiddens[idx]
+                ]
+
+            # Store transitions for active environments
+            for idx, env_idx in enumerate(active_indices):
+                for agent_idx in range(self.env.n_agents):
+                    episode_data_list[env_idx]['observations'][agent_idx].append(
+                        observations_list[env_idx][agent_idx]
+                    )
+                    episode_data_list[env_idx]['last_actions'][agent_idx].append(
+                        last_actions_list[env_idx][agent_idx]
+                    )
+                    episode_data_list[env_idx]['actions'][agent_idx].append(
+                        active_actions[idx][agent_idx]
                     )
 
-                    # Detach hidden states
-                    hiddens = [h.detach() if hasattr(h, 'detach') else h for h in hiddens]
+                # Store global state
+                state = np.concatenate(observations_list[env_idx])
+                episode_data_list[env_idx]['states'].append(state)
 
-                    actions_list.append(actions)
-                    new_hiddens_list.append(hiddens)
-                    hiddens_list[env_idx] = hiddens
-
-                    # Store transition for this environment
-                    for agent_idx in range(self.env.n_agents):
-                        episode_data_list[env_idx]['observations'][agent_idx].append(
-                            observations_list[env_idx][agent_idx]
-                        )
-                        episode_data_list[env_idx]['last_actions'][agent_idx].append(
-                            last_actions_list[env_idx][agent_idx]
-                        )
-                        episode_data_list[env_idx]['actions'][agent_idx].append(actions[agent_idx])
-
-                    # Store global state
-                    state = np.concatenate(observations_list[env_idx])
-                    episode_data_list[env_idx]['states'].append(state)
-
-            # Execute step in all environments (only non-None actions)
-            step_actions = [act for act in actions_list if act is not None]
-            if not step_actions:
-                break
-
-            # Create full actions list (with placeholders for done envs)
+            # ================================================================
+            # ENVIRONMENT STEP
+            # ================================================================
+            # Create full actions list (with dummy actions for done envs)
             full_actions_list = []
-            active_idx = 0
             for env_idx in range(self.n_envs):
                 if dones[env_idx]:
-                    # Send dummy actions for done envs (they won't be used)
                     full_actions_list.append(
                         [np.zeros(dim) for dim in self.env.action_dims]
                     )
                 else:
-                    full_actions_list.append(step_actions[active_idx])
-                    active_idx += 1
+                    full_actions_list.append(actions_list[env_idx])
 
             # Step all environments
             observations_list, rewards_list, dones_list, infos_list = self.env.step(full_actions_list)
 
-            # Process results
-            for env_idx in range(self.n_envs):
-                if not dones[env_idx]:  # Only update active environments
-                    reward = rewards_list[env_idx]
-                    episode_data_list[env_idx]['rewards'].append(reward)
-                    episode_rewards[env_idx] += reward
-                    episode_lengths[env_idx] += 1
-                    self.total_timesteps += 1
+            # Normalize new observations
+            if self.obs_normalizer is not None:
+                observations_list = self.obs_normalizer.normalize_batch(
+                    observations_list, update=True
+                )
 
-                    # Update last actions
-                    if actions_list[env_idx] is not None:
-                        last_actions_list[env_idx] = actions_list[env_idx]
+            # Process results for active environments
+            for env_idx in active_indices:
+                reward = rewards_list[env_idx]
+                episode_data_list[env_idx]['rewards'].append(reward)
+                episode_rewards[env_idx] += reward
+                episode_lengths[env_idx] += 1
+                self.total_timesteps += 1
 
-                    # Check if this environment is done
-                    if dones_list[env_idx]:
-                        dones[env_idx] = True
-                        # Store complete episode
-                        self.agent.store_episode(episode_data_list[env_idx])
+                # Update last actions
+                last_actions_list[env_idx] = actions_list[env_idx]
+
+                # Check if this environment is done
+                if dones_list[env_idx]:
+                    dones[env_idx] = True
+                    # Store complete episode
+                    self.agent.store_episode(episode_data_list[env_idx])
 
         return episode_rewards, episode_lengths
 
