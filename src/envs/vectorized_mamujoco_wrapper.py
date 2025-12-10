@@ -45,8 +45,15 @@ def worker(remote, parent_remote, env_name, partitioning):
                 # Execute step and return results
                 obs_dict, rewards_dict, term_dict, trunc_dict, info = env.step(data)
 
-                # Check if episode is done
-                done = any(term_dict.values()) or any(trunc_dict.values())
+                # Check if episode is done and WHY (terminated vs truncated)
+                terminated = any(term_dict.values())
+                truncated = any(trunc_dict.values())
+                done = terminated or truncated
+
+                # Add terminated/truncated info for proper TD target computation
+                # This is critical: terminal states should NOT bootstrap Q-values
+                info['terminated'] = terminated
+                info['truncated'] = truncated
 
                 # Convert dicts to lists for easier processing
                 observations = [obs_dict[agent_id] for agent_id in env.possible_agents]

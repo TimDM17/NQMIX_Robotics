@@ -464,13 +464,11 @@ class Trainer:
                 episode_lengths[env_idx] += 1
                 self.total_timesteps += 1
 
-                # Store terminated signal
-                # Check infos for truncation info, otherwise use done signal
+                # Store terminated signal (from vectorized wrapper info dict)
                 # Terminal = episode ended naturally (should NOT bootstrap)
-                # Truncated = hit time limit (SHOULD bootstrap, but we approximate as non-terminal)
+                # Truncated = hit time limit (SHOULD bootstrap)
                 info = infos_list[env_idx] if env_idx < len(infos_list) else {}
-                is_truncated = info.get('TimeLimit.truncated', False) or info.get('truncated', False)
-                is_terminated = dones_list[env_idx] and not is_truncated
+                is_terminated = info.get('terminated', False)
                 episode_data_list[env_idx]['terminated'].append(is_terminated)
 
                 # Update last actions
